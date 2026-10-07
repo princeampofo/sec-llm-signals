@@ -76,3 +76,23 @@ signals:
   max_gap_days: 550              # ...and at most this much (else no comparison)
   max_length_ratio: 3            # drop pairs whose MD&A lengths differ >3x (extraction mismatch)
   min_coverage: 0.80             # share of universe 10-Ks that must get a signal
+
+factors:
+  # Ken French Data Library (revised monthly; the cached file's CRSP vintage is reported).
+  five_factor_url: https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_CSV.zip
+  momentum_url: https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Momentum_Factor_CSV.zip
+
+backtest:
+  start: 2012-01-01              # first rebalance month
+  end: 2025-12-31                # last rebalance month (held into January 2026)
+  quantiles: 5
+  signal_max_age_days: 365       # a 10-K's signal stays valid for up to 12 months
+  cost_bps_per_side: 10
+  min_stocks: 100                # skip months with fewer scored stocks (early 2012)
+  newey_west_lags: null          # null: floor(4 * (T/100)^(2/9))
+  noise_seeds: 20                # random-signal sanity check: number of draws
+  signals:
+    lm_change:
+      file: signals_lm.parquet
+      column: lm_change
+      sign: -1                   # language more negative/uncertain than last year -> expect underperformance

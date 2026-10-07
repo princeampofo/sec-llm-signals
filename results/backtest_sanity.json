@@ -1,0 +1,16 @@
+{
+  "planted_future_return": {
+    "mean_ic": 1.0,
+    "sharpe_gross": 14.671224924181267,
+    "annual_return_gross": 2.1944645934008373
+  },
+  "random_noise": {
+    "draws": 20,
+    "mean_ic_avg": -0.00020924120427526197,
+    "mean_ic_max_abs": 0.007956706578116281,
+    "ic_t_avg": -0.0426915253698448,
+    "ic_t_sd": 1.1050684755096694,
+    "share_abs_t_above_2": 0.05
+  },
+  "passed": true
+}

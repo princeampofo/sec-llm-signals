@@ -2,12 +2,12 @@ PY ?= .venv/bin/python
 RUN = $(PY) -m secsignals.cli
 
 .PHONY: all install lint test index universe filings prices returns coverage documents \
-	sections dictionary signals extraction-check
+	sections dictionary signals factors sanity backtest extraction-check
 
 ## Full pipeline, raw EDGAR/Yahoo data -> results/. Every stage caches its downloads,
 ## so a rerun only fetches what is new.
 all: index universe filings prices returns coverage documents sections dictionary signals \
-	extraction-check
+	factors sanity backtest extraction-check
 
 install:
 	uv venv --python 3.13 .venv && uv pip install --python $(PY) -e ".[dev]"
@@ -48,6 +48,15 @@ dictionary:        ## Loughran-McDonald negative/uncertainty word counts per sec
 
 signals:           ## change vs. the company's previous 10-K; fails below the coverage target
 	$(RUN) signals
+
+factors:           ## Fama-French 5 factors + momentum (Ken French Data Library)
+	$(RUN) factors
+
+sanity:            ## engine checks: planted lookahead signal must win big, noise must give ~0 IC
+	$(RUN) sanity
+
+backtest:          ## quintile long-short, IC, turnover, costs, factor alpha -> results/backtest_*.md
+	$(RUN) backtest
 
 extraction-check:  ## MD&A extraction quality on a random sample (fails below the configured rate)
 	$(RUN) sample

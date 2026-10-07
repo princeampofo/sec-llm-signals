@@ -6,12 +6,15 @@ import argparse
 import hashlib
 import json
 import logging
+import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
-from secsignals import dictionary, edgar, market, sections, signals
+from secsignals import backtest, dictionary, edgar, factors, market, sections, signals
 from secsignals.config import load_config
 
 
@@ -241,13 +244,159 @@ def cmd_signals(cfg: dict, args: argparse.Namespace) -> None:
     print("PASS")
 
 
+def _load_factors(cfg: dict) -> tuple[pd.DataFrame, str | None]:
+    client = edgar.client_from_config(cfg)
+    f = cfg["factors"]
+    return factors.load_factors(client.get(f["five_factor_url"]), client.get(f["momentum_url"]))
+
+
+def _backtest_inputs(cfg: dict) -> tuple:
+    """(period returns, membership, ticker map, rebalance dates)."""
+    b, m = cfg["backtest"], cfg["market"]
+    prices = pd.read_parquet(_interim(cfg, "prices.parquet"))
+    calendar = pd.DatetimeIndex(
+        prices.loc[prices["symbol"] == m["calendar_symbol"], "date"]
+    ).sort_values()
+    # One extra month-end so the last rebalance has a holding period.
+    end = pd.Timestamp(b["end"]) + pd.offsets.MonthEnd(1)
+    dates = backtest.rebalance_dates(calendar, b["start"], end)
+    returns = backtest.period_returns(prices, dates)
+    membership = pd.read_parquet(_interim(cfg, "membership.parquet"))
+    tmap = pd.read_parquet(_interim(cfg, "ticker_map.parquet"))
+    return returns, membership, tmap, dates
+
+
+def _panel(cfg: dict, signals_df: pd.DataFrame, inputs: tuple) -> pd.DataFrame:
+    returns, membership, tmap, dates = inputs
+    return backtest.build_panel(signals_df, membership, tmap, returns, dates,
+                                cfg["backtest"]["signal_max_age_days"])  # fmt: skip
+
+
+def _run(cfg: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    b = cfg["backtest"]
+    return backtest.long_short(panel, b["quantiles"], b["cost_bps_per_side"], b["min_stocks"])
+
+
+def _git_commit() -> str:
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+                             text=True, check=True)  # fmt: skip
+        return out.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def _log_trial(cfg: dict, name: str, settings: dict, summary: dict, regressions: dict) -> None:
+    """Append one row to results/trials.csv. config_hash identifies the variant, so the
+    deflated Sharpe ratio can count distinct trials rather than reruns."""
+    key = json.dumps({"signal": name, **settings}, sort_keys=True, default=str)
+    row = {
+        "run_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "signal": name,
+        "config_hash": hashlib.sha256(key.encode()).hexdigest()[:12],
+        "git_commit": _git_commit(),
+        "settings": key,
+        "months": summary["months"],
+        "mean_ic": summary["mean_ic"],
+        "ic_t": summary["ic_t"],
+        "annual_return_gross": summary["gross"]["annual_return"],
+        "sharpe_gross": summary["gross"]["sharpe"],
+        "annual_return_net": summary["net"]["annual_return"],
+        "sharpe_net": summary["net"]["sharpe"],
+        "alpha_annualized": regressions["gross"]["alpha_annualized"],
+        "alpha_t": regressions["gross"]["alpha_t"],
+        "avg_turnover": summary["avg_turnover"],
+    }
+    path = _results(cfg, "trials.csv")
+    pd.DataFrame([row]).to_csv(path, mode="a", header=not path.exists(), index=False)
+
+
+def cmd_factors(cfg: dict, args: argparse.Namespace) -> None:
+    f, vintage = _load_factors(cfg)
+    print(f"factors: {f.index.min():%Y-%m} to {f.index.max():%Y-%m}, CRSP vintage {vintage}")
+
+
+def cmd_backtest(cfg: dict, args: argparse.Namespace) -> None:
+    b = cfg["backtest"]
+    inputs = _backtest_inputs(cfg)
+    factor_data, vintage = _load_factors(cfg)
+    names = [args.signal] if args.signal else list(b["signals"])
+    for name in names:
+        spec = b["signals"][name]
+        sig = pd.read_parquet(_processed(cfg, spec["file"])).dropna(subset=[spec["column"]])
+        sig = sig[["cik", "known_at"]].assign(score=spec["sign"] * sig[spec["column"]])
+        panel = _panel(cfg, sig, inputs)
+        panel.to_parquet(_processed(cfg, f"panel_{name}.parquet"), index=False)
+        monthly = _run(cfg, panel)
+        summary = backtest.summarize(monthly)
+        returns = monthly.set_index("period_end")
+        regressions = {k: factors.factor_regression(returns[col], factor_data, b["newey_west_lags"])
+                       for k, col in (("gross", "ret_ls"), ("net", "ret_ls_net"))}  # fmt: skip
+        keys = ("start", "end", "quantiles", "signal_max_age_days", "cost_bps_per_side",
+                "min_stocks")  # fmt: skip
+        settings = {k: b[k] for k in keys} | {"sign": spec["sign"]}
+        out = {"signal": name, "settings": settings, "summary": summary,
+               "factor_regression": regressions, "factor_vintage": vintage}  # fmt: skip
+        _results(cfg, f"backtest_{name}.json").write_text(json.dumps(out, indent=2, default=str))
+        monthly.to_csv(_results(cfg, f"backtest_{name}_monthly.csv"), index=False)
+        _results(cfg, f"backtest_{name}.md").write_text(
+            backtest.report_markdown(name, summary, regressions, settings, vintage))
+        _log_trial(cfg, name, settings, summary, regressions)
+        g, n, r = summary["gross"], summary["net"], regressions["gross"]
+        print(f"{name}: IC {summary['mean_ic']:.4f} (t {summary['ic_t']:.2f}), "
+              f"Sharpe {g['sharpe']:.2f} gross / {n['sharpe']:.2f} net, "
+              f"alpha {r['alpha_annualized']:.2%} (t {r['alpha_t']:.2f}); "
+              f"report results/backtest_{name}.md")  # fmt: skip
+
+
+def cmd_sanity(cfg: dict, args: argparse.Namespace) -> None:
+    """Engine checks on the real universe: a lookahead signal (next period's return) must
+    look spectacular, and random signals must average zero IC."""
+    b = cfg["backtest"]
+    inputs = _backtest_inputs(cfg)
+    returns, _, _, _ = inputs
+    known = returns[["date"]].drop_duplicates()
+    # Every company gets a dummy score known the day before each rebalance; the planted and
+    # noise scores then replace it inside the panel.
+    tmap = pd.read_parquet(_interim(cfg, "ticker_map.parquet"))
+    shell = tmap["cik"].dropna().astype(int).unique()
+    sig = pd.DataFrame([(c, (d - pd.Timedelta(days=1)).tz_localize(edgar.EASTERN), 0.0)
+                        for d in known["date"] for c in shell],
+                       columns=["cik", "known_at", "score"])  # fmt: skip
+    panel = _panel(cfg, sig, inputs)
+    planted = backtest.summarize(_run(cfg, panel.assign(score=panel["ret"])))
+    noise = []
+    for seed in range(b["noise_seeds"]):
+        rng = np.random.default_rng(cfg["project"]["seed"] + seed)
+        noise.append(backtest.summarize(_run(cfg, panel.assign(score=rng.normal(size=len(panel))))))
+    ics = np.array([s["mean_ic"] for s in noise])
+    ts = np.array([s["ic_t"] for s in noise])
+    report = {
+        "planted_future_return": {"mean_ic": planted["mean_ic"],
+                                  "sharpe_gross": planted["gross"]["sharpe"],
+                                  "annual_return_gross": planted["gross"]["annual_return"]},
+        "random_noise": {"draws": len(noise), "mean_ic_avg": float(ics.mean()),
+                         "mean_ic_max_abs": float(np.abs(ics).max()),
+                         "ic_t_avg": float(ts.mean()), "ic_t_sd": float(ts.std()),
+                         "share_abs_t_above_2": float((np.abs(ts) > 2).mean())},
+    }  # fmt: skip
+    passed = planted["mean_ic"] > 0.5 and planted["gross"]["sharpe"] > 3 and abs(ics.mean()) < 0.005
+    report["passed"] = bool(passed)
+    _results(cfg, "backtest_sanity.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    if not passed:
+        sys.exit("FAIL: backtest engine sanity checks")
+    print("PASS")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="secsignals")
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("index", "sample", "universe", "prices", "returns", "coverage", "documents",
-                 "dictionary", "signals"):
+                 "dictionary", "signals", "factors", "sanity"):
         sub.add_parser(name)
+    sub.add_parser("backtest").add_argument("--signal", help="one signal from config; default all")
     for name in ("fetch", "sections", "check"):
         p = sub.add_parser(name)
         p.add_argument("--subset", default="sample")
@@ -261,7 +410,8 @@ def main(argv: list[str] | None = None) -> None:
                 "sections": cmd_sections, "check": cmd_check, "universe": cmd_universe,
                 "prices": cmd_prices, "returns": cmd_returns, "coverage": cmd_coverage,
                 "documents": cmd_documents, "dictionary": cmd_dictionary,
-                "signals": cmd_signals}  # fmt: skip
+                "signals": cmd_signals, "factors": cmd_factors, "backtest": cmd_backtest,
+                "sanity": cmd_sanity}  # fmt: skip
     commands[args.command](load_config(args.config), args)
 
 

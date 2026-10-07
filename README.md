@@ -18,6 +18,8 @@ EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ a
           10-K documents ─▶ MD&A (Item 7) ─▶ LM word counts ─▶ change vs. previous 10-K
                                               │
                          CIK ↔ ticker map ─▶ Yahoo prices ─▶ forward returns, coverage report
+                                                      │
+                     monthly quintile backtest ◀──────┘──▶ IC, turnover, costs, factor alpha
 ```
 
 | Stage | Module | Output |
@@ -32,6 +34,8 @@ EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ a
 | Prices | `market.py` | Split- and dividend-adjusted daily closes, behind a swappable price-source interface |
 | Forward returns | `market.py` | 21-trading-day return from the first trading day after acceptance |
 | Coverage | `market.py` | Share of universe-months with prices; list of missing companies |
+| Backtest | `backtest.py` | Monthly quintile long-short, IC, turnover, returns after costs |
+| Factor regression | `factors.py` | Alpha vs. Fama-French 5 factors + momentum, Newey-West errors |
 
 ## Design choices
 
@@ -55,6 +59,15 @@ EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ a
 - **Mismatched pairs are dropped.** If a company's two MD&As differ in length by more than 3×,
   one extraction almost always caught a stub; those 20 pairs average 6× the typical change and
   are excluded.
+- **The backtest only trades on what was public.** At each month-end rebalance, a signal counts
+  only if its 10-K was accepted on an earlier calendar day, and stays valid for 12 months.
+  Stocks that stop trading mid-month are held to their last price, not dropped.
+- **The engine is tested against known answers.** A planted signal built from next month's
+  returns must produce absurd performance (it does: IC 1.0, Sharpe 14.7 on the real universe),
+  and random signals must average zero IC (20 draws: mean IC −0.0002). See
+  `results/backtest_sanity.json`.
+- **Every backtest run is logged** to `results/trials.csv` with a hash of its settings, so the
+  number of variants tried is on record for multiple-testing adjustments.
 - **Reused Yahoo symbols are rejected.** A price series that does not overlap the company's
   membership dates belongs to another security and is dropped (`results/rejected_price_symbols.csv`).
 
@@ -72,6 +85,22 @@ Both are below 95%, so **backtest results on this data are likely optimistic**. 
 from 97.9% in 2025 to 71.9% in 2012: the further back, the more of that year's index has since
 disappeared. CRSP data with delisting returns would close the gap; the price loader is behind
 one interface so it can be swapped by config. Details: `results/coverage_report.md`.
+
+## Results
+
+Loughran-McDonald baseline (`lm_change`, long the stocks whose language became *less* negative
+and uncertain), 167 months from March 2012 to January 2026, about 390 stocks a month:
+
+| Metric | Value |
+|---|---|
+| Mean monthly IC (t-stat) | −0.005 (−1.02) |
+| Long-short Sharpe, gross / after 10 bp costs | −0.13 / −0.22 |
+| Factor alpha, annualized (Newey-West t) | −2.7% (−2.14) |
+| Monthly turnover | 10.4% |
+
+The word-count signal does not predict returns in large caps; after controlling for known
+factors it leans slightly the wrong way, mostly before 2017. Full report:
+`results/backtest_lm_change.md`.
 
 ## Signal coverage
 
@@ -102,7 +131,8 @@ All parameters (dates, rate limits, horizons, thresholds) live in `config.yaml`.
 ## Repository layout
 
 ```
-src/secsignals/   pipeline code (edgar, sections, market, dictionary, signals, cli)
+src/secsignals/   pipeline code (edgar, sections, market, dictionary, signals, backtest,
+                  factors, cli)
 tests/            unit tests + 5 saved 10-K fixtures (no network needed)
 reference/        hand-checked ticker overrides
 results/          reports and logs produced by the pipeline
