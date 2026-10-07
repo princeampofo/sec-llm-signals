@@ -2,16 +2,15 @@
   "subset": "sample",
   "population": "universe",
   "filings": 200,
-  "succeeded": 196,
-  "success_rate": 0.98,
+  "succeeded": 199,
+  "success_rate": 0.995,
   "min_success_rate": 0.9,
-  "median_words": 10974,
+  "median_words": 11149,
   "methods": {
-    "item_heading": 194,
-    "title_fallback": 2
+    "item_heading": 195,
+    "title_fallback": 4
   },
   "failure_reasons": {
-    "section_too_short": 3,
     "incorporated_by_reference": 1
   }
 }

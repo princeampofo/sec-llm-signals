@@ -4,17 +4,20 @@ Does a change in the tone of a company's 10-K, as read by a language model, pred
 returns over the following month, once lookahead bias, LLM memorization and known risk factors
 are removed?
 
-The pipeline goes from raw SEC EDGAR filings to forward returns with one command, and every
-stage is built to be point-in-time: nothing uses information that was not public at the time.
+The pipeline goes from raw SEC EDGAR filings to a tone-change signal and forward returns with
+one command, and every stage is built to be point-in-time: nothing uses information that was not
+public at the time. A Loughran-McDonald word-count signal serves as the baseline any LLM signal
+has to beat.
 
 ## Pipeline
 
 ```
 EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ acceptance timestamps
+                                              │                          │
+                                              ▼                          ▼
+          10-K documents ─▶ MD&A (Item 7) ─▶ LM word counts ─▶ change vs. previous 10-K
                                               │
-                                              ▼
-              MD&A (Item 7) extraction   CIK ↔ ticker map ─▶ Yahoo prices ─▶ forward returns
-                                                                         └─▶ coverage report
+                         CIK ↔ ticker map ─▶ Yahoo prices ─▶ forward returns, coverage report
 ```
 
 | Stage | Module | Output |
@@ -22,7 +25,10 @@ EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ a
 | Filing index | `edgar.py` | Every 10-K filed 2012–2025 (including co-registrants on combined filings) |
 | Universe | `market.py` | S&P 500 members as of any date; date-ranged CIK ↔ ticker map |
 | Filings | `edgar.py` | Acceptance timestamp for each universe 10-K |
+| Documents | `edgar.py` | Full 10-Ks for universe companies, plus each one's prior-year 10-K (gzipped cache) |
 | Section extraction | `sections.py` | Clean MD&A text, with a logged reason for every failure |
+| Dictionary scores | `dictionary.py` | Loughran-McDonald negative and uncertainty word counts per MD&A |
+| Baseline signal | `signals.py` | Change in each share vs. the same company's previous 10-K |
 | Prices | `market.py` | Split- and dividend-adjusted daily closes, behind a swappable price-source interface |
 | Forward returns | `market.py` | 21-trading-day return from the first trading day after acceptance |
 | Coverage | `market.py` | Share of universe-months with prices; list of missing companies |
@@ -39,6 +45,16 @@ EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ a
   (CEG, SNDK), move between companies (AGN, IR), and survive holding-company reorganizations
   (Google → Alphabet). Automatic matches must have filed a 10-K during the ticker's membership;
   the remaining cases are hand-checked in `reference/ticker_overrides.csv`, each with a note.
+- **Signals are changes, not levels.** A bank and a biotech write very differently, so the
+  share of negative words mostly measures style. The signal is the change against the company's
+  own previous 10-K (accepted 9–18 months earlier), so it measures news.
+- **Point-in-time word lists.** Loughran-McDonald added words over time (e.g. CYBERATTACK in
+  2014) and removed others (CLOSED, 2020). Both filings of a pair are scored with the list in
+  force at the later filing, so a change never reflects an edit to the dictionary, and no
+  filing is scored with words that were added after it. The dictionary file is pinned by checksum.
+- **Mismatched pairs are dropped.** If a company's two MD&As differ in length by more than 3×,
+  one extraction almost always caught a stub; those 20 pairs average 6× the typical change and
+  are excluded.
 - **Reused Yahoo symbols are rejected.** A price series that does not overlap the company's
   membership dates belongs to another security and is dropped (`results/rejected_price_symbols.csv`).
 
@@ -57,8 +73,20 @@ from 97.9% in 2025 to 71.9% in 2012: the further back, the more of that year's i
 disappeared. CRSP data with delisting returns would close the gap; the price loader is behind
 one interface so it can be swapped by config. Details: `results/coverage_report.md`.
 
-MD&A extraction succeeds on 98% of a random sample of S&P 500 10-Ks
-(`results/extraction_check_universe.json`).
+## Signal coverage
+
+| | |
+|---|---|
+| MD&A extracted (all 7,732 universe-company 10-Ks) | 94.8% |
+| Universe 10-Ks with a baseline signal | **92.9%** (6,483 of 6,977) |
+| Missing: own MD&A not extractable (mostly incorporated by reference to Exhibit 13) | 346 |
+| Missing: no previous 10-K within 9–18 months (IPOs, spin-offs) | 71 |
+| Missing: previous MD&A not extractable | 57 |
+| Missing: length-mismatched pair | 20 |
+
+MD&A extraction succeeds on 99.5% of a random sample of S&P 500 10-Ks
+(`results/extraction_check_universe.json`); per-year coverage is in
+`results/signal_coverage_lm.json`.
 
 ## Running
 
@@ -74,8 +102,8 @@ All parameters (dates, rate limits, horizons, thresholds) live in `config.yaml`.
 ## Repository layout
 
 ```
-src/secsignals/   pipeline code (edgar, sections, market, cli)
-tests/            unit tests + 5 saved 10-K fixtures
+src/secsignals/   pipeline code (edgar, sections, market, dictionary, signals, cli)
+tests/            unit tests + 5 saved 10-K fixtures (no network needed)
 reference/        hand-checked ticker overrides
 results/          reports and logs produced by the pipeline
 data/             downloads and intermediate Parquet files (not committed; rebuilt by `make all`)

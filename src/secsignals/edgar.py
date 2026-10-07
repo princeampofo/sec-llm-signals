@@ -7,6 +7,7 @@ them to market sessions without guessing.
 
 from __future__ import annotations
 
+import gzip
 import logging
 import re
 import threading
@@ -62,7 +63,8 @@ class EdgarClient:
     """GET with a User-Agent, rate limit, retries and an on-disk cache.
 
     Cached files mirror the URL path under cache_dir, so a cached download is
-    the exact bytes EDGAR served and can be inspected by hand.
+    the exact bytes EDGAR served and can be inspected by hand. Large documents
+    can be stored gzipped (same path + ".gz"); read_cached() handles both.
     """
 
     def __init__(
@@ -94,14 +96,23 @@ class EdgarClient:
             path = path.with_name(f"{path.name}__{quote(parts.query, safe='')}")
         return path
 
-    def get(self, url: str, use_cache: bool = True) -> bytes:
+    def cached_file(self, url: str) -> Path | None:
+        """The cache file holding this URL (plain or gzipped), if any."""
         path = self.cache_path(url)
-        if use_cache and path.exists():
-            return path.read_bytes()
+        gz = path.with_name(path.name + ".gz")
+        return path if path.exists() else gz if gz.exists() else None
+
+    def get(self, url: str, use_cache: bool = True, compress: bool = False) -> bytes:
+        cached = self.cached_file(url) if use_cache else None
+        if cached is not None:
+            return read_cached(cached)
         data = self._download(url)
+        path = self.cache_path(url)
+        if compress:
+            path = path.with_name(path.name + ".gz")
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".part")
-        tmp.write_bytes(data)
+        tmp.write_bytes(gzip.compress(data, compresslevel=6) if compress else data)
         tmp.replace(path)  # atomic: an interrupted run never leaves a half file
         return data
 
@@ -123,6 +134,12 @@ class EdgarClient:
                 log.info("retry %d for %s (%s), sleeping %.1fs", attempt + 1, url, reason, delay)
                 self._sleep(delay)
         raise EdgarError(f"gave up on {url} after {self.max_retries + 1} tries ({reason})")
+
+
+def read_cached(path: Path | str) -> bytes:
+    path = Path(path)
+    data = path.read_bytes()
+    return gzip.decompress(data) if path.suffix == ".gz" else data
 
 
 # ---------------------------------------------------------------- quarterly index
@@ -272,8 +289,8 @@ def fetch_one(
         if meta.primary_doc_url is None:
             raise ValueError(f"no document of type {row['form_type']} in filing index")
         if with_document:
-            client.get(meta.primary_doc_url)
-            out["doc_path"] = str(client.cache_path(meta.primary_doc_url))
+            client.get(meta.primary_doc_url, compress=True)  # 10-Ks are ~5 MB of HTML
+            out["doc_path"] = str(client.cached_file(meta.primary_doc_url))
     except (EdgarError, ValueError) as exc:
         out["fetch_error"] = str(exc)
         log.warning("fetch failed for %s: %s", row["accession"], exc)

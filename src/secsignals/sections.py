@@ -17,11 +17,13 @@ from __future__ import annotations
 import logging
 import re
 import warnings
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
 
 import pandas as pd
 from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
+
+from secsignals.edgar import read_cached
 
 log = logging.getLogger(__name__)
 
@@ -45,20 +47,24 @@ ITEM_HEADING = re.compile(
 # A real heading is followed by its capitalized title ("Item 8. Financial..."); a
 # cross-reference is followed by prose ("Item 8 of this Report", "Item 8, Note 4").
 # "Items 7 and 7A. Management's..." combines two items in one heading.
+# Separators seen between number and title: ". : - – — |" ("ITEM 7 | Management's...").
 HEADING_TITLE_START = re.compile(
-    r"[\s.:\-–—]*(?:(?:and|&)\s*\d{1,2}\s*\(?[a-c]?\)?[\s.:\-–—]*)?(?:[A-Z\[(]|$)"
+    r"[\s.:\-–—|]*(?:(?:and|&)\s*\d{1,2}\s*\(?[a-c]?\)?[\s.:\-–—|]*)?(?:[A-Z\[(]|$)"
 )
 MDA_TITLE = re.compile(r"discussion|md\s*&\s*a", re.IGNORECASE)
 # End-heading titles must start right after the number, so "Item 8 - Note 7 to the
 # consolidated financial statements" (a cross-reference) is not mistaken for Item 8.
 END_TITLE = re.compile(
-    r"[\s.:\-–—]*(?:quantitative|qualitative|market\s+risk"
+    r"[\s.:\-–—|]*(?:quantitative|qualitative|market\s+risk"
     r"|(?:consolidated\s+)?financial\s+(?:statements|information))",
     re.IGNORECASE,
 )
 LOOKAHEAD_CHARS = 300  # heading title may be on the next line ("Item 7." / "Management's...")
 
-FALLBACK_START = re.compile(r"management['’`]?s\s+discussion\s+and\s+analysis", re.IGNORECASE)
+# "Combined" MD&A: one MD&A shared by a parent and its subsidiary registrants (utilities).
+FALLBACK_START = re.compile(
+    r"(?:combined\s+)?management['’`]?s\s+discussion\s+(?:and|&)\s+analysis", re.IGNORECASE
+)
 FALLBACK_END = re.compile(
     r"^(?:quantitative\s+and\s+qualitative\s+disclosures?\s+about\s+market\s+risk"
     r"|financial\s+statements\s+and\s+supplementary\s+data"
@@ -220,31 +226,37 @@ def extract_mda(raw: bytes, min_words: int, max_heading_chars: int) -> Extractio
 # ---------------------------------------------------------------- pipeline stage
 
 
-def extract_sections(filings: pd.DataFrame, min_words: int, max_heading_chars: int) -> pd.DataFrame:
-    """One row per filing: MD&A text on success, a failure reason otherwise."""
-    rows = []
-    for _, f in filings.iterrows():
-        if pd.notna(f["fetch_error"]) or pd.isna(f["doc_path"]):  # NaN, not None, after Parquet
-            result = Extraction(None, 0, None, f"fetch_failed: {f['fetch_error']}")
-        else:
-            try:
-                result = extract_mda(Path(f["doc_path"]).read_bytes(), min_words, max_heading_chars)
-            except Exception as exc:  # noqa: BLE001 - one bad document must not stop the run
-                result = Extraction(None, 0, None, f"parse_error: {type(exc).__name__}: {exc}")
-        if result.failure:
-            log.debug("MD&A extraction failed for %s: %s", f["accession"], result.failure)
-        rows.append(
-            {
-                "accession": f["accession"],
-                "cik": f["cik"],
-                "form_type": f["form_type"],
-                "acceptance_datetime": f["acceptance_datetime"],
-                "section": "mda",
-                "text": result.text,
-                "n_words": result.n_words,
-                "method": result.method,
-                "status": "ok" if result.failure is None else "failed",
-                "failure_reason": result.failure,
-            }
-        )
-    return pd.DataFrame(rows)
+def _extract_file(doc_path: object, fetch_error: object, min_words: int,
+                  max_heading_chars: int) -> Extraction:  # fmt: skip
+    if pd.notna(fetch_error) or pd.isna(doc_path):  # NaN, not None, after Parquet
+        return Extraction(None, 0, None, f"fetch_failed: {fetch_error}")
+    try:
+        return extract_mda(read_cached(str(doc_path)), min_words, max_heading_chars)
+    except Exception as exc:  # noqa: BLE001 - one bad document must not stop the run
+        return Extraction(None, 0, None, f"parse_error: {type(exc).__name__}: {exc}")
+
+
+def extract_sections(filings: pd.DataFrame, min_words: int, max_heading_chars: int,
+                     workers: int = 1) -> pd.DataFrame:  # fmt: skip
+    """One row per filing: MD&A text on success, a failure reason otherwise.
+
+    Parsing is CPU-bound (~1-2 s per 10-K), so workers > 1 spreads it over processes.
+    """
+    args = (filings["doc_path"], filings["fetch_error"],
+            [min_words] * len(filings), [max_heading_chars] * len(filings))  # fmt: skip
+    if workers > 1:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_extract_file, *args, chunksize=8))
+    else:
+        results = list(map(_extract_file, *args))
+    out = filings[["accession", "cik", "form_type", "acceptance_datetime"]].copy()
+    out["section"] = "mda"
+    out["text"] = [r.text for r in results]
+    out["n_words"] = [r.n_words for r in results]
+    out["method"] = [r.method for r in results]
+    out["status"] = ["ok" if r.failure is None else "failed" for r in results]
+    out["failure_reason"] = [r.failure for r in results]
+    for acc, r in zip(out["accession"], results, strict=True):
+        if r.failure:
+            log.debug("MD&A extraction failed for %s: %s", acc, r.failure)
+    return out.reset_index(drop=True)

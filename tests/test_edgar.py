@@ -236,6 +236,15 @@ def test_fetch_one_records_errors_instead_of_raising(tmp_path):
     assert out["doc_path"] is None
 
 
+def test_client_compressed_cache_roundtrip(tmp_path):
+    client = make_client(tmp_path, [FakeResponse(200, b"<html>big</html>")])
+    assert client.get(URL, compress=True) == b"<html>big</html>"
+    stored = client.cached_file(URL)
+    assert stored.suffix == ".gz" and stored.read_bytes() != b"<html>big</html>"
+    assert client.get(URL) == b"<html>big</html>"  # served from the .gz cache, no request
+    assert edgar.read_cached(stored) == b"<html>big</html>"
+
+
 def test_fetch_one_downloads_primary_document(tmp_path):
     page = (FIXTURES / "0000064040-25-000052-index.htm").read_bytes()
     doc = gzip.decompress((FIXTURES / "filings" / "0000064040-25-000052.htm.gz").read_bytes())
@@ -243,4 +252,4 @@ def test_fetch_one_downloads_primary_document(tmp_path):
     row = pd.Series({"accession": "0000064040-25-000052", "cik": 64040, "form_type": "10-K"})
     out = edgar.fetch_one(client, ARCHIVES, row)
     assert out["fetch_error"] is None
-    assert Path(out["doc_path"]).read_bytes() == doc
+    assert edgar.read_cached(out["doc_path"]) == doc

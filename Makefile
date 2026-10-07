@@ -1,11 +1,13 @@
 PY ?= .venv/bin/python
 RUN = $(PY) -m secsignals.cli
 
-.PHONY: all install lint test index universe filings prices returns coverage extraction-check
+.PHONY: all install lint test index universe filings prices returns coverage documents \
+	sections dictionary signals extraction-check
 
 ## Full pipeline, raw EDGAR/Yahoo data -> results/. Every stage caches its downloads,
 ## so a rerun only fetches what is new.
-all: index universe filings prices returns coverage extraction-check
+all: index universe filings prices returns coverage documents sections dictionary signals \
+	extraction-check
 
 install:
 	uv venv --python 3.13 .venv && uv pip install --python $(PY) -e ".[dev]"
@@ -33,6 +35,19 @@ returns:           ## 21-day forward returns from the first trading day after ac
 
 coverage:          ## survivorship check: universe-months with prices, missing companies
 	$(RUN) coverage
+
+documents:         ## full 10-K documents (gzipped) for universe companies, incl. prior-year 10-Ks
+	$(RUN) documents
+	$(RUN) fetch --subset documents
+
+sections:          ## MD&A (Item 7) text for every document
+	$(RUN) sections --subset documents
+
+dictionary:        ## Loughran-McDonald negative/uncertainty word counts per section
+	$(RUN) dictionary
+
+signals:           ## change vs. the company's previous 10-K; fails below the coverage target
+	$(RUN) signals
 
 extraction-check:  ## MD&A extraction quality on a random sample (fails below the configured rate)
 	$(RUN) sample

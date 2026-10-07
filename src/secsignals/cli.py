@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -10,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from secsignals import edgar, market, sections
+from secsignals import dictionary, edgar, market, sections, signals
 from secsignals.config import load_config
 
 
@@ -53,7 +54,7 @@ def cmd_fetch(cfg: dict, args: argparse.Namespace) -> None:
 def cmd_sections(cfg: dict, args: argparse.Namespace) -> None:
     s = cfg["sections"]
     filings = pd.read_parquet(_interim(cfg, f"filings_{args.subset}.parquet"))
-    df = sections.extract_sections(filings, s["min_words"], s["max_heading_chars"])
+    df = sections.extract_sections(filings, s["min_words"], s["max_heading_chars"], s["workers"])
     df.to_parquet(_interim(cfg, f"sections_{args.subset}.parquet"), index=False)
     failures = df[df["status"] == "failed"].merge(
         filings[["accession", "company", "primary_doc_url"]], on="accession"
@@ -116,7 +117,8 @@ def cmd_universe(cfg: dict, args: argparse.Namespace) -> None:
     review = market.review_ticker_map(tmap, filing_index, u["match_window_days"])
     review.to_csv(_results(cfg, "ticker_map_review.csv"), index=False)
 
-    filings = market.universe_filings(filing_index, membership, tmap)
+    in_period = pd.to_datetime(filing_index["date_filed"]) >= pd.Timestamp(u["start"])
+    filings = market.universe_filings(filing_index[in_period], membership, tmap)
     filings.to_parquet(_interim(cfg, "universe_index.parquet"), index=False)
     print(f"universe: {tmap['ticker'].nunique()} tickers, {len(unmatched)} without a CIK "
           f"(see results/unmatched_tickers.csv); {len(filings)} universe 10-Ks")  # fmt: skip
@@ -177,11 +179,74 @@ def cmd_coverage(cfg: dict, args: argparse.Namespace) -> None:
     print(f"{len(missing)} missing companies listed in results/missing_companies.csv")
 
 
+def _processed(cfg: dict, name: str) -> Path:
+    path = Path(cfg["paths"]["processed"]) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def cmd_documents(cfg: dict, args: argparse.Namespace) -> None:
+    """Universe 10-Ks plus each universe company's 10-Ks from up to max_gap_days before
+    it joined: a company's first universe filing still needs last year's to compare."""
+    index = pd.read_parquet(_interim(cfg, "filing_index.parquet"))
+    universe = pd.read_parquet(_interim(cfg, "universe_index.parquet"))
+    index["filed"] = pd.to_datetime(index["date_filed"])
+    span = (universe.assign(filed=pd.to_datetime(universe["date_filed"]))
+            .groupby("cik")["filed"].agg(["min", "max"]))  # fmt: skip
+    pad = pd.Timedelta(days=cfg["signals"]["max_gap_days"])
+    cand = index.join(span, on="cik", how="inner")
+    history = cand[(cand["filed"] >= cand["min"] - pad) & (cand["filed"] <= cand["max"])]
+    docs = pd.concat([universe[index.columns.drop("filed")], history[index.columns.drop("filed")]])
+    docs = docs.drop_duplicates(["accession", "cik"]).reset_index(drop=True)
+    docs.to_parquet(_interim(cfg, "documents_index.parquet"), index=False)
+    print(f"documents: {len(docs)} 10-Ks ({len(docs) - len(universe)} from before index entry)")
+
+
+def cmd_dictionary(cfg: dict, args: argparse.Namespace) -> None:
+    d = cfg["dictionary"]
+    raw = edgar.client_from_config(cfg).get(d["url"])
+    digest = hashlib.sha256(raw).hexdigest()
+    if d["sha256"] and digest != d["sha256"]:
+        sys.exit(f"dictionary checksum {digest} != pinned {d['sha256']}: the file changed")
+    lexicon = dictionary.build_lexicon(dictionary.parse_master_dictionary(raw), d["categories"])
+    secs = pd.read_parquet(_interim(cfg, "sections_documents.parquet"))
+    counts = dictionary.score_sections(secs, lexicon)
+    counts.to_parquet(_processed(cfg, "lm_counts.parquet"), index=False)
+    print(f"dictionary sha256 {digest}; scored {len(counts)} sections, "
+          f"cohorts: {', '.join(lexicon.columns)}")  # fmt: skip
+
+
+def cmd_signals(cfg: dict, args: argparse.Namespace) -> None:
+    s, d = cfg["signals"], cfg["dictionary"]
+    filings = pd.read_parquet(_interim(cfg, "filings_documents.parquet"))
+    secs = pd.read_parquet(_interim(cfg, "sections_documents.parquet"), columns=["accession",
+                                                                                "status"])
+    counts = pd.read_parquet(_processed(cfg, "lm_counts.parquet"))
+    universe = pd.read_parquet(_interim(cfg, "universe_index.parquet"))
+
+    pairs = signals.previous_filings(filings, s["min_gap_days"], s["max_gap_days"])
+    sig = signals.lm_change_signals(pairs, counts, d["categories"], d["point_in_time"],
+                                    s["max_length_ratio"])  # fmt: skip
+    sig = sig.dropna(subset=["lm_change"])
+    sig.to_parquet(_processed(cfg, "signals_lm.parquet"), index=False)
+
+    report = signals.signal_coverage(sig, universe, "lm_change")
+    ok = set(secs.loc[secs["status"] == "ok", "accession"])
+    report["missing_reasons"] = signals.missing_reasons(universe, pairs, ok, sig, "lm_change")
+    report["min_coverage"] = s["min_coverage"]
+    _results(cfg, "signal_coverage_lm.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    if report["coverage"] < s["min_coverage"]:
+        sys.exit(f"FAIL: signal coverage {report['coverage']:.1%} below {s['min_coverage']:.0%}")
+    print("PASS")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="secsignals")
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("index", "sample", "universe", "prices", "returns", "coverage"):
+    for name in ("index", "sample", "universe", "prices", "returns", "coverage", "documents",
+                 "dictionary", "signals"):
         sub.add_parser(name)
     for name in ("fetch", "sections", "check"):
         p = sub.add_parser(name)
@@ -194,8 +259,9 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format=log_format)
     commands = {"index": cmd_index, "sample": cmd_sample, "fetch": cmd_fetch,
                 "sections": cmd_sections, "check": cmd_check, "universe": cmd_universe,
-                "prices": cmd_prices, "returns": cmd_returns,
-                "coverage": cmd_coverage}  # fmt: skip
+                "prices": cmd_prices, "returns": cmd_returns, "coverage": cmd_coverage,
+                "documents": cmd_documents, "dictionary": cmd_dictionary,
+                "signals": cmd_signals}  # fmt: skip
     commands[args.command](load_config(args.config), args)
 
 

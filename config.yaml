@@ -17,15 +17,16 @@ edgar:
   max_retries: 5
   backoff_seconds: 2.0           # doubled on each retry
   timeout_seconds: 60
-  workers: 4                     # concurrent downloads; all share one rate limiter
+  workers: 8                     # concurrent downloads; all share one rate limiter (8 req/s)
   forms: ["10-K"]                # amendments (10-K/A) are excluded on purpose
-  index_start_year: 2012
+  index_start_year: 2011         # one year early: 2012 signals compare with 2011 10-Ks
   index_end_year: 2025
 
 sections:
   name: mda                      # Item 7, Management's Discussion and Analysis
   min_words: 250                 # shorter extractions are logged as failures
   max_heading_chars: 200         # lines longer than this are prose, not headings
+  workers: 8                     # parallel processes for HTML parsing
 
 sample:                          # MD&A extraction quality check
   # "universe": S&P 500 10-Ks (needs `make universe`); "all": every 10-K filer,
@@ -60,3 +61,18 @@ market:
   max_entry_lag_days: 7                        # no trade if the stock was not trading near the signal
   market_close: "16:00"                        # US Eastern
   coverage_warn_below: 0.95
+
+dictionary:
+  # Loughran-McDonald Master Dictionary (1993-2025 edition, updated March 2026), from
+  # https://sraf.nd.edu/loughranmcdonald-master-dictionary/ . Free for academic use; it is
+  # downloaded, not committed. The checksum pins the exact file.
+  url: "https://drive.usercontent.google.com/download?id=1iq2RUf8qGFEAk1g8wQntP3habOnR3fXF&export=download&confirm=t"
+  sha256: e2d1328682bab7d2187684fb9f5420bb730401c9eefc00daf835edd203f4859d
+  categories: [negative, uncertainty]
+  point_in_time: true            # score each pair with the word list in force at the later filing
+
+signals:
+  min_gap_days: 270              # previous 10-K must be at least this much older...
+  max_gap_days: 550              # ...and at most this much (else no comparison)
+  max_length_ratio: 3            # drop pairs whose MD&A lengths differ >3x (extraction mismatch)
+  min_coverage: 0.80             # share of universe 10-Ks that must get a signal

@@ -183,6 +183,34 @@ def test_combined_items_7_and_7a():
     assert extract(raw).text == BODY
 
 
+def test_pipe_separated_headings():
+    raw = doc("ITEM 7 | Management's Discussion and Analysis", BODY,
+              "ITEM 7 | Critical Accounting Estimates", BODY,  # running page header
+              "ITEM 7A | Quantitative and Qualitative Disclosures about Market Risk")  # fmt: skip
+    result = extract(raw)
+    assert result.method == "item_heading"
+    assert result.text.startswith(BODY) and result.text.endswith(BODY)
+
+
+def test_combined_mda_after_item_7a_pointer():
+    # Utility holding companies: Item 7 holds only a page index, and the combined MD&A
+    # for all registrants follows, before Item 8.
+    raw = doc("Item 7. Management's Discussion and Analysis", "Overview II-3",
+              "Item 7A. Quantitative and Qualitative Disclosures About Market Risk", "See MD&A.",
+              "COMBINED MANAGEMENT'S DISCUSSION AND ANALYSIS", BODY,
+              "COMBINED MANAGEMENT'S DISCUSSION AND ANALYSIS (continued)", BODY,
+              "Item 8. Financial Statements and Supplementary Data")  # fmt: skip
+    result = extract(raw)
+    assert result.method == "title_fallback"
+    assert result.n_words > 2 * 360
+
+
+def test_title_fallback_with_ampersand():
+    raw = doc("MANAGEMENT’S DISCUSSION & ANALYSIS", BODY,
+              "QUANTITATIVE AND QUALITATIVE DISCLOSURE ABOUT MARKET RISK")  # fmt: skip
+    assert extract(raw).text == BODY
+
+
 def test_title_fallback_for_cross_reference_layout():
     raw = doc("Management's Discussion and Analysis", BODY,
               "Report of Independent Registered Public Accounting Firm")  # fmt: skip
