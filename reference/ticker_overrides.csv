@@ -1,0 +1,113 @@
+ticker,cik,valid_from,valid_to,yahoo_symbol,note
+AABA,1011006,,,,Yahoo Inc. renamed Altaba; liquidated 2019
+ABC,1140859,,,,AmerisourceBergen; renamed Cencora (COR) 2023-08-30
+AGN,850693,,2015-03-17,,Allergan Inc. until acquired by Actavis plc on 2015-03-17
+AGN,1578845,2015-03-18,,,Actavis plc renamed Allergan plc; membership file shows no separate ACT ticker for Actavis
+ANRZQ,1301063,,,,Alpha Natural Resources
+ANTM,1156039,,,,WellPoint (membership file uses later ticker ANTM) -> Anthem -> Elevance Health (ELV)
+ARNC,4281,,,,Alcoa Inc. (membership file uses later ticker ARNC) -> Arconic Inc. -> Howmet (HWM)
+ATGE,730464,,,,DeVry Inc. -> Adtalem
+BCR,9892,,,,C. R. Bard; acquired by BD 2017
+BEAM,789073,,,,Beam Inc.; acquired by Suntory 2014 (SEC ticker BEAM now belongs to another CIK)
+BHGE,808362,,2017-07-03,,Baker Hughes Inc. (membership file uses later ticker BHGE) until the GE oil & gas merger
+BHGE,1701605,2017-07-04,,,Baker Hughes a GE Co -> Baker Hughes Co (BKR)
+BLL,9389,,,,Ball Corp; ticker changed to BALL 2022
+BRCM,1054374,,,,Broadcom Corp; acquired by Avago 2016
+BTUUQ,1064728,,,,Peabody Energy (pre-bankruptcy listing)
+CA,356028,,,,CA Inc.; acquired by Broadcom 2018
+CBS,813828,,,,CBS Corp -> ViacomCBS -> Paramount Global
+CCEP,1491675,,,,Coca-Cola Enterprises (membership file uses later ticker CCEP); SEC ticker CCEP now belongs to the UK successor
+CDAY,1725057,,,,Ceridian HCM -> Dayforce
+CMCSK,1166691,,,,Comcast Class K special shares (same issuer as CMCSA)
+CTL,18926,,,,CenturyLink -> Lumen (LUMN)
+CVC,1053112,,,,Cablevision; acquired by Altice 2016
+DFS,1393612,,,,Discover Financial; acquired by Capital One 2025
+DWDP,1666700,,,,DowDuPont -> DuPont de Nemours (DD)
+ESRX,885721,,2012-04-01,,Express Scripts Inc. until the Medco merger
+ESRX,1532063,2012-04-02,,,Express Scripts Holding Co.
+ETFC,1015780,,,,E*TRADE Financial; acquired by Morgan Stanley 2020
+EVHC,1678531,,,,Envision Healthcare Corp (post-AmSurg merger)
+FDO,34408,,,,Family Dollar; acquired by Dollar Tree 2015
+FI,798354,,,,Fiserv traded as FI 2023-2025; SEC lists it under FISV again
+HAR,800459,,,,Harman International; acquired by Samsung 2017
+HCP,765880,,,,HCP Inc. -> Healthpeak (DOC)
+HNZ,46640,,,,H. J. Heinz; acquired 2013
+HOT,316206,,,,Starwood Hotels & Resorts; acquired by Marriott 2016
+HSH,23666,,,,Sara Lee -> Hillshire Brands
+IPG,51644,,,,Interpublic Group; acquired by Omnicom 2025
+JCP,1166126,,,,J. C. Penney
+KRFT,1545158,,,,Kraft Foods Group (2012 spin-off)
+LB,701985,,,,Limited Brands -> L Brands -> Bath & Body Works (BBWI)
+LO,1424847,,,,Lorillard; acquired by Reynolds 2015
+MWV,1159297,,,,MeadWestvaco; merged into WestRock 2015
+MXIM,743316,,,,Maxim Integrated; acquired by Analog Devices 2021
+MYL,69499,,2015-02-26,,Mylan Inc. until reorganizing as Mylan N.V.
+MYL,1623613,2015-02-27,,,Mylan N.V.; merged into Viatris 2020
+NE,1458891,,,,Noble Corp (Switzerland) parent; CIK 1169055 is its Cayman subsidiary co-registrant
+NLOK,849399,,,,Symantec -> NortonLifeLock -> Gen Digital (GEN)
+PEAK,765880,,,,Healthpeak (formerly HCP) -> DOC
+PKI,31791,,,,PerkinElmer -> Revvity (RVTY)
+PSKY,2041610,,,,Paramount Skydance (formed 2025-08); no 10-K filed before 2026
+PX,884905,,,,Praxair; merged into Linde 2018
+Q,2058873,,,,Qnity Electronics (DuPont spin-off 2025-11); no 10-K filed before 2026
+RRD,29669,,,,R. R. Donnelley & Sons
+SOLS,2064953,,,,Solstice Advanced Materials (Honeywell spin-off 2025-10); no 10-K filed before 2026
+SYMC,849399,,,,Symantec -> NortonLifeLock -> Gen Digital (GEN)
+TMK,320335,,,,Torchmark -> Globe Life (GL)
+TSS,721683,,,,Total System Services; acquired by Global Payments 2019
+UTX,101829,,,,United Technologies -> Raytheon Technologies -> RTX
+VIAC,813828,,,,ViacomCBS -> Paramount Global
+WCG,1279363,,,,WellCare; acquired by Centene 2020
+WIN,1282266,,,,Windstream Holdings
+WRK,1636023,,2018-11-01,,WestRock Co (2015 MWV/RockTenn merger)
+WRK,1732845,2018-11-02,,,WestRock Co (new holding company after KapStone acquisition)
+WYND,1361658,,,,Wyndham Worldwide -> Wyndham Destinations -> Travel + Leisure (TNL)
+APA,6769,,2021-02-28,APA,Apache Corp until the APA Corp holding-company reorganization (shares converted 1:1)
+APA,1841666,2021-03-01,,,APA Corp
+AVGO,1441634,,2016-01-31,AVGO,Avago Technologies until it became Broadcom Ltd
+AVGO,1649338,2016-02-01,2018-04-04,AVGO,Broadcom Ltd until redomiciling as Broadcom Inc.
+AVGO,1730168,2018-04-05,,,Broadcom Inc.
+BLK,1364742,,2024-09-30,BLK,BlackRock Inc. until the 2024 holding-company reorganization
+BLK,2012383,2024-10-01,,,BlackRock (new holding company)
+CEG,1004440,,2012-03-12,-,Constellation Energy Group until acquired by Exelon; ticker reused by a different company
+CEG,1868275,2022-02-02,,,Constellation Energy Corp (2022 Exelon spin-off)
+CI,701221,,2018-12-19,CI,Cigna Corp until the Express Scripts merger created a new holding company
+CI,1739940,2018-12-20,,,Cigna Corp / Cigna Group (new holding company)
+DD,30554,,2017-08-31,-,E. I. du Pont until the DowDuPont merger; its CIK now lists only preferred shares
+DD,1666700,2019-06-01,,,DuPont de Nemours (renamed from DowDuPont)
+DELL,826083,,2013-10-29,-,Dell Inc. until taken private; ticker reused by Dell Technologies
+DELL,1571996,2024-09-01,,,Dell Technologies (rejoined index 2024)
+DIS,1001039,,2019-03-19,DIS,Walt Disney (old) until the 21st Century Fox deal created a new holding company
+DIS,1744489,2019-03-20,,,Walt Disney Co (new holding company)
+DOW,29915,,2017-08-31,-,Dow Chemical until the DowDuPont merger; ticker reused by Dow Inc.
+DOW,1751788,2019-04-01,,,Dow Inc. (2019 DowDuPont spin-off)
+DXC,23082,,2017-03-31,-,Computer Sciences Corp (membership file uses later ticker DXC)
+DXC,1688568,2017-04-01,,,DXC Technology
+ETN,31277,,2012-11-29,ETN,Eaton Corp until redomiciling as Eaton plc (shares converted 1:1)
+ETN,1551182,2012-11-30,,,Eaton Corp plc
+FOX,1308161,,2019-03-18,-,Twenty-First Century Fox class B (membership file uses later ticker FOX)
+FOX,1754301,2019-03-19,,,Fox Corp class B
+FOXA,1308161,,2019-03-18,-,News Corp renamed Twenty-First Century Fox (membership file uses later ticker FOXA)
+FOXA,1754301,2019-03-19,,,Fox Corp
+FTI,1135152,,2017-01-16,-,FMC Technologies until the Technip merger
+FTI,1681459,2017-01-17,,,TechnipFMC
+GOOG,1288776,,2015-10-01,GOOG,Google Inc. until the Alphabet holding-company reorganization
+GOOG,1652044,2015-10-02,,,Alphabet
+GOOGL,1288776,,2015-10-01,GOOGL,Google Inc. (membership file uses later ticker GOOGL)
+GOOGL,1652044,2015-10-02,,,Alphabet
+ICE,1174746,,2013-11-12,ICE,IntercontinentalExchange Inc. until the NYSE Euronext deal created a new holding company
+ICE,1571949,2013-11-13,,,Intercontinental Exchange
+IR,1466258,,2020-02-29,,Ingersoll-Rand plc (renamed Trane Technologies - now TT); ticker IR then passed to Gardner Denver
+IR,1699150,2020-03-01,,,Ingersoll Rand Inc. (formerly Gardner Denver)
+MDT,64670,,2015-01-26,MDT,Medtronic Inc. until the Covidien deal created Medtronic plc
+MDT,1613103,2015-01-27,,,Medtronic plc
+PRGO,820096,,2013-12-18,PRGO,Perrigo Co until the Elan deal created Perrigo plc
+PRGO,1585364,2013-12-19,,,Perrigo Co plc
+SNDK,1000180,,2016-05-12,-,SanDisk Corp until acquired by Western Digital; ticker reused by the 2025 spin-off
+SNDK,2023554,2025-02-01,,,Sandisk Corp (2025 Western Digital spin-off)
+SUN,95304,,,-,Sunoco Inc.; SEC ticker SUN now belongs to Sunoco LP (a different company)
+WBA,104207,,2014-12-30,WBA,Walgreen Co until the Alliance Boots deal created Walgreens Boots Alliance
+WBA,1618921,2014-12-31,,,Walgreens Boots Alliance; taken private 2025
+XRX,108772,,2019-07-31,XRX,Xerox Corp until the Xerox Holdings reorganization
+XRX,1770450,2019-08-01,,,Xerox Holdings
+XOM,34088,,,XOM,Exxon Mobil; 2026 holding-company reorganization moved ticker XOM to new CIK 2115436 (shares converted 1:1)

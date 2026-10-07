@@ -1,0 +1,15 @@
+Description:           Master Index of EDGAR Dissolved Filings
+Last Data Received:    March 31, 2021
+Comments:              webmaster@sec.gov
+Anonymous FTP:         ftp://ftp.sec.gov/edgar/
+ 
+ 
+ 
+ 
+CIK|Company Name|Form Type|Date Filed|Filename
+--------------------------------------------------------------------------------
+1000045|NICHOLAS FINANCIAL INC|10-Q|2021-02-11|edgar/data/1000045/0001564590-21-005399.txt
+1000209|MEDALLION FINANCIAL CORP|10-K|2021-03-12|edgar/data/1000209/0001564590-21-012829.txt
+1000209|MEDALLION FINANCIAL CORP|10-K/A|2021-03-30|edgar/data/1000209/0001564590-21-016001.txt
+20639|AMBASE CORP|10-K|2021-03-24|edgar/data/20639/0001140361-21-009786.txt
+99999|PIPE | NAME CO|10-K|2021-03-31|edgar/data/99999/0000099999-21-000001.txt

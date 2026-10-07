@@ -1,0 +1,21 @@
+{
+  "full": {
+    "universe_months": 84449,
+    "with_price": 72750,
+    "coverage": 0.8615,
+    "missing_by_reason": {
+      "no_price": 10663,
+      "no_yahoo_symbol": 969,
+      "no_cik": 67
+    }
+  },
+  "llm": {
+    "universe_months": 36273,
+    "with_price": 34286,
+    "coverage": 0.9452,
+    "missing_by_reason": {
+      "no_price": 1932,
+      "no_cik": 55
+    }
+  }
+}

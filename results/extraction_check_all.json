@@ -1,0 +1,17 @@
+{
+  "subset": "sample",
+  "filings": 200,
+  "succeeded": 179,
+  "success_rate": 0.895,
+  "min_success_rate": 0.9,
+  "median_words": 7144,
+  "methods": {
+    "item_heading": 178,
+    "title_fallback": 1
+  },
+  "failure_reasons": {
+    "abs_issuer_no_mda": 20,
+    "incorporated_by_reference": 1
+  },
+  "population": "all"
+}

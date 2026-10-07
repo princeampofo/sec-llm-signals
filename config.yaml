@@ -1,0 +1,62 @@
+# Every pipeline parameter lives here. Nothing is hard-coded in src/.
+project:
+  seed: 42
+
+paths:
+  raw: data/raw            # cached EDGAR downloads, byte-for-byte
+  interim: data/interim    # parsed tables (Parquet)
+  processed: data/processed
+  results: results
+
+edgar:
+  # SEC requires "Name email" in the User-Agent. Set your own here or via the
+  # SEC_USER_AGENT environment variable (the env var wins).
+  user_agent: "secsignals-research your-name your-email@example.com"
+  archives_url: https://www.sec.gov/Archives
+  max_requests_per_second: 8     # SEC limit is 10; stay under it
+  max_retries: 5
+  backoff_seconds: 2.0           # doubled on each retry
+  timeout_seconds: 60
+  workers: 4                     # concurrent downloads; all share one rate limiter
+  forms: ["10-K"]                # amendments (10-K/A) are excluded on purpose
+  index_start_year: 2012
+  index_end_year: 2025
+
+sections:
+  name: mda                      # Item 7, Management's Discussion and Analysis
+  min_words: 250                 # shorter extractions are logged as failures
+  max_heading_chars: 200         # lines longer than this are prose, not headings
+
+sample:                          # MD&A extraction quality check
+  # "universe": S&P 500 10-Ks (needs `make universe`); "all": every 10-K filer,
+  # including asset-backed trusts that legally have no MD&A.
+  population: universe
+  size: 200
+  start_year: 2020
+  end_year: 2025
+  min_success_rate: 0.90
+
+universe:
+  # Historical S&P 500 membership, pinned to a commit so reruns see identical data.
+  membership_url: "https://raw.githubusercontent.com/fja05680/sp500/a2430f2af0c79ddf0748e91de11bdeb1616ab5a7/S%26P%20500%20Historical%20Components%20%26%20Changes%20(Updated).csv"
+  # Wikipedia revision of 2025-12-23: current members with CIKs + the change log
+  # (later revisions dropped the change log). Used only to put names to old tickers.
+  wikipedia_url: "https://en.wikipedia.org/w/index.php?title=List_of_S%26P_500_companies&oldid=1329075976"
+  sec_tickers_url: https://www.sec.gov/files/company_tickers.json
+  overrides: reference/ticker_overrides.csv    # hand-checked ticker -> CIK rows
+  start: 2012-01-01
+  end: 2025-12-31
+  llm_start: 2020-01-01                        # coverage is also reported for the LLM period
+  match_window_days: 400                       # a matched CIK must file a 10-K this close to membership
+
+market:
+  price_source: yfinance                       # swap for a CRSP loader later
+  price_start: 2011-12-01
+  price_end: 2026-03-31                        # leaves room for returns after late-2025 filings
+  calendar_symbol: SPY                         # its trading days define the market calendar
+  download_batch_size: 50
+  pause_seconds: 2.0
+  forward_horizon_days: 21
+  max_entry_lag_days: 7                        # no trade if the stock was not trading near the signal
+  market_close: "16:00"                        # US Eastern
+  coverage_warn_below: 0.95

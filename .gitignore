@@ -1,0 +1,34 @@
+# Downloaded and derived data: large, rebuilt by `make`, and partly not ours to
+# redistribute (Yahoo prices, SEC filings). results/ IS committed: it is the evidence.
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local secrets
+.env
+
+# Logs
+*.log
+
+# Personal planning and study notes (kept local)
+SPEC.md
+NOTES.md

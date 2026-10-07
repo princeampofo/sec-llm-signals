@@ -1,0 +1,17 @@
+{
+  "subset": "sample",
+  "population": "universe",
+  "filings": 200,
+  "succeeded": 196,
+  "success_rate": 0.98,
+  "min_success_rate": 0.9,
+  "median_words": 10974,
+  "methods": {
+    "item_heading": 194,
+    "title_fallback": 2
+  },
+  "failure_reasons": {
+    "section_too_short": 3,
+    "incorporated_by_reference": 1
+  }
+}
