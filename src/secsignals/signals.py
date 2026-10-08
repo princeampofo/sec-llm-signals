@@ -111,3 +111,26 @@ def signal_coverage(signals: pd.DataFrame, universe: pd.DataFrame, signal: str) 
         "coverage": round(float(has.mean()), 4),
         "by_year": {int(y): float(c) for y, c in by_year.items()},
     }
+
+
+LLM_SCORES = ("tone", "hedging", "risk_severity")
+
+
+def llm_change_signals(pairs: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
+    """Per filing: LLM scores now and at the previous 10-K, and their changes.
+
+    pessimism = (hedging + risk_severity - tone) / 3, each score in [-1, 1].
+    llm_change = change in pessimism vs. the company's previous 10-K (higher = the
+    language turned more negative, hedged or risk-laden than last year).
+    """
+    s = scores.set_index("accession")[list(LLM_SCORES)]
+    s = s.assign(pessimism=(s["hedging"] + s["risk_severity"] - s["tone"]) / 3)
+    out = pairs[["accession", "cik", "acceptance_datetime", "prev_accession",
+                 "prev_acceptance"]].copy()  # fmt: skip
+    out["known_at"] = out["acceptance_datetime"]
+    for col in [*LLM_SCORES, "pessimism"]:
+        out[col] = out["accession"].map(s[col])
+        out[f"prev_{col}"] = out["prev_accession"].map(s[col])
+        out[f"d_{col}"] = out[col] - out[f"prev_{col}"]
+    out["llm_change"] = out["d_pessimism"]
+    return out

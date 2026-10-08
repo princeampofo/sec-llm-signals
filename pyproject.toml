@@ -21,6 +21,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.5"]
+# LLM scoring: local inference on Apple silicon (mlx-lm), or any OpenAI-compatible
+# server (transformers only supplies the tokenizer for counting excerpt tokens).
+llm = [
+    "mlx-lm>=0.32; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "transformers>=4.44",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/secsignals"]

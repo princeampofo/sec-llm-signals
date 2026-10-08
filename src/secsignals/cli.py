@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from secsignals import backtest, dictionary, edgar, factors, market, sections, signals
+from secsignals import backtest, dictionary, edgar, factors, llm_scorer, market, sections, signals
 from secsignals.config import load_config
 
 
@@ -389,6 +389,92 @@ def cmd_sanity(cfg: dict, args: argparse.Namespace) -> None:
     print("PASS")
 
 
+def _llm_model_id(cfg: dict) -> str:
+    c = cfg["llm"]
+    name = c["model"] if c["backend"] == "mlx" else c["served_model_name"]
+    return f"{name}@{c['model_revision'][:7]}"
+
+
+def _llm_scope(cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(sections to score, filing pairs). Scope: universe 10-Ks accepted in the LLM period,
+    plus each one's previous 10-K, which the change signal needs."""
+    c, s = cfg["llm"], cfg["signals"]
+    filings = pd.read_parquet(_interim(cfg, "filings_documents.parquet"))
+    universe = pd.read_parquet(_interim(cfg, "universe_index.parquet"))
+    pairs = signals.previous_filings(filings, s["min_gap_days"], s["max_gap_days"])
+    acc = pairs["acceptance_datetime"].dt.tz_convert(edgar.EASTERN).dt.tz_localize(None)
+    end = pd.Timestamp(c["end"]) + pd.Timedelta(days=1)
+    in_period = (acc >= pd.Timestamp(c["start"])) & (acc < end)
+    current = pairs[in_period & pairs["accession"].isin(universe["accession"])]
+    scope = set(current["accession"]) | set(current["prev_accession"].dropna())
+    secs = pd.read_parquet(_interim(cfg, "sections_documents.parquet"),
+                           columns=["accession", "status", "text"])  # fmt: skip
+    secs = secs[secs["accession"].isin(scope) & (secs["status"] == "ok")]
+    secs = secs.drop_duplicates("accession").sort_values("accession").reset_index(drop=True)
+    return secs, current
+
+
+def _llm_cache(cfg: dict) -> llm_scorer.ScoreCache:
+    return llm_scorer.ScoreCache(_processed(cfg, "llm_scores.sqlite"))
+
+
+def cmd_llm_score(cfg: dict, args: argparse.Namespace) -> None:
+    c = cfg["llm"]
+    secs, _ = _llm_scope(cfg)
+    if args.justify:
+        n = min(c["justification_sample"], len(secs))
+        secs = secs.sample(n=n, random_state=cfg["project"]["seed"]).sort_values("accession")
+    backend = llm_scorer.backend_from_config(cfg)
+    stats = llm_scorer.score_sections(
+        secs, backend, _llm_cache(cfg), c["prompt_version"], c["excerpt_tokens"],
+        c["min_forward_tokens"], c["max_new_tokens_justify" if args.justify else "max_new_tokens"],
+        c["max_retries"], justify=args.justify, limit=args.limit,
+    )  # fmt: skip
+    per = stats.seconds / max(stats.valid + stats.invalid, 1)
+    left = stats.to_score - stats.cached - stats.valid - stats.invalid
+    print(f"{backend.model_id}: {stats.to_score} filings in scope, {stats.cached} already cached, "
+          f"{stats.valid + stats.invalid} scored now ({stats.invalid} invalid), "
+          f"new model calls: {stats.model_calls}, {per:.1f} s/filing"
+          + (f"; {left} left (~{left * per / 3600:.1f} h)" if left else ""))  # fmt: skip
+
+
+def cmd_llm_signals(cfg: dict, args: argparse.Namespace) -> None:
+    c = cfg["llm"]
+    secs, current = _llm_scope(cfg)
+    cached = _llm_cache(cfg).frame(c["prompt_version"], _llm_model_id(cfg))
+    cached = cached[cached["accession"].isin(secs["accession"])]
+    valid = cached[cached["status"] == "valid"]
+    filings = pd.read_parquet(_interim(cfg, "filings_documents.parquet"))
+    s = cfg["signals"]
+    pairs = signals.previous_filings(filings, s["min_gap_days"], s["max_gap_days"])
+    sig = signals.llm_change_signals(pairs[pairs["accession"].isin(current["accession"])], valid)
+    sig = sig.dropna(subset=["llm_change"])
+    sig.to_parquet(_processed(cfg, "signals_llm.parquet"), index=False)
+    invalid = cached[cached["status"] == "invalid"]
+    invalid[["accession", "attempts", "error", "raw_output"]].to_csv(
+        _results(cfg, "llm_invalid_outputs.csv"), index=False)
+    universe = pd.read_parquet(_interim(cfg, "universe_index.parquet"))
+    period_universe = universe[universe["accession"].isin(current["accession"])]
+    report = {
+        "model": _llm_model_id(cfg), "prompt_version": c["prompt_version"],
+        "training_cutoff": str(c["training_cutoff"]),
+        "filings_in_scope": int(len(secs)), "scored": int(len(cached)),
+        "unscored": int(len(secs) - len(cached)), "valid": int(len(valid)),
+        "invalid": int(len(invalid)),
+        "valid_share": round(len(valid) / max(len(secs), 1), 4),
+        "needed_retry": int((valid["attempts"].astype(int) > 1).sum()),
+        "excerpt_methods": valid["excerpt_method"].value_counts().to_dict(),
+        "median_seconds_per_filing": float(cached["seconds"].median()) if len(cached) else None,
+        "signal_coverage": signals.signal_coverage(sig, period_universe, "llm_change"),
+        "min_valid_share": c["min_valid_share"],
+    }  # fmt: skip
+    _results(cfg, "llm_scoring_report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    if report["valid_share"] < c["min_valid_share"]:
+        sys.exit(f"FAIL: valid LLM scores for {report['valid_share']:.1%} of filings in scope")
+    print("PASS")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="secsignals")
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
@@ -397,6 +483,11 @@ def main(argv: list[str] | None = None) -> None:
                  "dictionary", "signals", "factors", "sanity"):
         sub.add_parser(name)
     sub.add_parser("backtest").add_argument("--signal", help="one signal from config; default all")
+    p = sub.add_parser("llm-score")
+    p.add_argument("--limit", type=int, help="score at most this many new filings (timing runs)")
+    p.add_argument("--justify", action="store_true",
+                   help="score the hand-check sample with written justifications")
+    sub.add_parser("llm-signals")
     for name in ("fetch", "sections", "check"):
         p = sub.add_parser(name)
         p.add_argument("--subset", default="sample")
@@ -411,7 +502,8 @@ def main(argv: list[str] | None = None) -> None:
                 "prices": cmd_prices, "returns": cmd_returns, "coverage": cmd_coverage,
                 "documents": cmd_documents, "dictionary": cmd_dictionary,
                 "signals": cmd_signals, "factors": cmd_factors, "backtest": cmd_backtest,
-                "sanity": cmd_sanity}  # fmt: skip
+                "sanity": cmd_sanity, "llm-score": cmd_llm_score,
+                "llm-signals": cmd_llm_signals}  # fmt: skip
     commands[args.command](load_config(args.config), args)
 
 
