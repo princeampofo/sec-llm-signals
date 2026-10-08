@@ -1,0 +1,91 @@
+{
+  "signal": "llm_change",
+  "settings": {
+    "start": "2012-01-01",
+    "end": "2025-12-31",
+    "quantiles": 5,
+    "signal_max_age_days": 365,
+    "cost_bps_per_side": 10,
+    "min_stocks": 100,
+    "sign": -1
+  },
+  "summary": {
+    "months": 71,
+    "first_period": "2020-03-31",
+    "last_period": "2026-01-31",
+    "avg_stocks": 436.36619718309856,
+    "mean_ic": -0.0011563934823368312,
+    "ic_t": -0.1859173519519411,
+    "ic_positive_share": 0.4647887323943662,
+    "gross": {
+      "annual_return": -0.008714529552697518,
+      "annual_vol": 0.04604996755266273,
+      "sharpe": -0.18924073166244
+    },
+    "net": {
+      "annual_return": -0.014093460683465321,
+      "annual_vol": 0.04635992316735019,
+      "sharpe": -0.3040009499711788
+    },
+    "avg_turnover": 0.1065190804418196,
+    "max_drawdown_net": -0.1595703833467481,
+    "quantile_annual_returns": {
+      "q1": 0.14747497401121712,
+      "q2": 0.15813101990603837,
+      "q3": 0.13385140258420322,
+      "q4": 0.1568821350365247,
+      "q5": 0.1387604444585196
+    }
+  },
+  "factor_regression": {
+    "gross": {
+      "months": 71,
+      "newey_west_lags": 3,
+      "alpha_monthly": 0.00020394133321164048,
+      "alpha_annualized": 0.0024472959985396858,
+      "alpha_t": 0.17178080043544894,
+      "betas": {
+        "Mkt-RF": -0.0584,
+        "SMB": -0.0296,
+        "HML": -0.0555,
+        "RMW": -0.0123,
+        "CMA": 0.0112,
+        "Mom": -0.0363
+      },
+      "beta_t": {
+        "Mkt-RF": -1.25,
+        "SMB": -0.45,
+        "HML": -1.15,
+        "RMW": -0.17,
+        "CMA": 0.13,
+        "Mom": -0.81
+      },
+      "r_squared": 0.08159949212313644
+    },
+    "net": {
+      "months": 71,
+      "newey_west_lags": 3,
+      "alpha_monthly": -0.0002566648771986878,
+      "alpha_annualized": -0.0030799785263842536,
+      "alpha_t": -0.21252337148928652,
+      "betas": {
+        "Mkt-RF": -0.0577,
+        "SMB": -0.0229,
+        "HML": -0.052,
+        "RMW": -0.0124,
+        "CMA": 0.0039,
+        "Mom": -0.0316
+      },
+      "beta_t": {
+        "Mkt-RF": -1.22,
+        "SMB": -0.35,
+        "HML": -1.06,
+        "RMW": -0.17,
+        "CMA": 0.04,
+        "Mom": -0.7
+      },
+      "r_squared": 0.07442670622794001
+    }
+  },
+  "factor_vintage": "202608"
+}

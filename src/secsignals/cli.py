@@ -468,6 +468,13 @@ def cmd_llm_signals(cfg: dict, args: argparse.Namespace) -> None:
         "signal_coverage": signals.signal_coverage(sig, period_universe, "llm_change"),
         "min_valid_share": c["min_valid_share"],
     }  # fmt: skip
+    # Hand-check sheet: the justified sample, with a link to read each filing.
+    justified = _llm_cache(cfg).frame(c["prompt_version"] + "-justify", _llm_model_id(cfg))
+    docs = filings.drop_duplicates("accession")[["accession", "company", "primary_doc_url"]]
+    justified.merge(docs, on="accession", how="left")[
+        ["accession", "company", "status", "tone", "hedging", "risk_severity", "justification",
+         "excerpt_method", "primary_doc_url"]
+    ].to_csv(_results(cfg, "llm_hand_check.csv"), index=False)  # fmt: skip
     _results(cfg, "llm_scoring_report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     if report["valid_share"] < c["min_valid_share"]:

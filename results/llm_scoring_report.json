@@ -1,0 +1,32 @@
+{
+  "model": "mlx-community/Llama-3.2-3B-Instruct-8bit@ff05489",
+  "prompt_version": "v1",
+  "training_cutoff": "2023-12-31",
+  "filings_in_scope": 3458,
+  "scored": 3458,
+  "unscored": 0,
+  "valid": 3458,
+  "invalid": 0,
+  "valid_share": 1.0,
+  "needed_retry": 0,
+  "excerpt_methods": {
+    "forward_looking": 3450,
+    "opening_fallback": 8
+  },
+  "median_seconds_per_filing": 3.0222867499978747,
+  "signal_coverage": {
+    "signal": "llm_change",
+    "universe_filings": 2995,
+    "with_signal": 2878,
+    "coverage": 0.9609,
+    "by_year": {
+      "2020": 0.9395,
+      "2021": 0.9479,
+      "2022": 0.9639,
+      "2023": 0.974,
+      "2024": 0.97,
+      "2025": 0.9701
+    }
+  },
+  "min_valid_share": 0.95
+}
