@@ -119,3 +119,11 @@ llm:
   end: 2025-12-31
   justification_sample: 200      # filings scored with a written justification for hand checks
   min_valid_share: 0.95
+
+memorization:                    # does the model score better when it can tell who and when?
+  anonymizer_version: 1          # bump whenever the masking rules change (it is in the cache key)
+  pre_cutoff_sample: 500         # random pre-cutoff filings rescored anonymized (all post-cutoff ones are)
+  ner_model: en_core_web_sm      # spaCy named-entity model for people, products, organizations
+  spot_check: 30                 # filings written side by side for a manual anonymization check
+  min_stocks: 30                 # the pre-cutoff sample holds ~100 stocks a month, not ~450
+  bootstrap: 2000                # resamples for the confidence interval of IC differences

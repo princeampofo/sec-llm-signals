@@ -2,12 +2,13 @@ PY ?= .venv/bin/python
 RUN = $(PY) -m secsignals.cli
 
 .PHONY: all install lint test index universe filings prices returns coverage documents \
-	sections dictionary signals llm-score llm-signals factors sanity backtest extraction-check
+	sections dictionary signals llm-score llm-signals factors sanity backtest memorization \
+	extraction-check
 
 ## Full pipeline, raw EDGAR/Yahoo data -> results/. Every stage caches its downloads,
 ## so a rerun only fetches what is new.
 all: index universe filings prices returns coverage documents sections dictionary signals \
-	llm-score llm-signals factors sanity backtest extraction-check
+	llm-score llm-signals factors sanity backtest memorization extraction-check
 
 install:
 	uv venv --python 3.13 .venv && uv pip install --python $(PY) -e ".[dev,llm]"
@@ -64,6 +65,11 @@ sanity:            ## engine checks: planted lookahead signal must win big, nois
 
 backtest:          ## quintile long-short, IC, turnover, costs, factor alpha -> results/backtest_*.md
 	$(RUN) backtest
+
+memorization:      ## anonymized rescoring; original vs. anonymized, before vs. after the model's cutoff
+	$(RUN) anonymize
+	$(RUN) llm-score-anonymized
+	$(RUN) memorization
 
 extraction-check:  ## MD&A extraction quality on a random sample (fails below the configured rate)
 	$(RUN) sample

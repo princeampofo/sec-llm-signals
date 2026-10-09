@@ -216,3 +216,30 @@ def test_factor_regression_recovers_alpha_and_beta():
     assert out["betas"]["Mom"] == pytest.approx(-0.3, abs=0.02)
     assert out["alpha_t"] > 10
     assert out["newey_west_lags"] == factors.newey_west_lags(240) == 4
+
+
+# ---------------------------------------------------------------- filing-level IC
+
+
+def test_filing_ic_on_known_relationships():
+    rng = np.random.default_rng(3)
+    ret = pd.Series(rng.normal(size=2000))
+    perfect = backtest.filing_ic(ret * 2, ret)
+    assert perfect["ic"] == pytest.approx(1.0) and np.isnan(perfect["t"]) and perfect["n"] == 2000
+    noisy = backtest.filing_ic(ret + rng.normal(scale=3, size=2000), ret)
+    assert 0.2 < noisy["ic"] < 0.4 and noisy["t"] > 8
+    with_gaps = backtest.filing_ic(ret.where(ret.index % 2 == 0), ret)
+    assert with_gaps["n"] == 1000
+
+
+def test_bootstrap_ic_gap_centers_on_the_true_difference():
+    rng = np.random.default_rng(4)
+    ret = pd.Series(rng.normal(size=3000))
+    informed = ret + rng.normal(scale=2, size=3000)  # IC about 0.45
+    noise = pd.Series(rng.normal(size=3000))  # IC about 0
+    draws = backtest.bootstrap_ic_gap(informed, noise, ret, 300, np.random.default_rng(0))
+    point = backtest.filing_ic(informed, ret)["ic"] - backtest.filing_ic(noise, ret)["ic"]
+    lo, hi = np.percentile(draws, [2.5, 97.5])
+    assert lo < point < hi and lo > 0.3
+    same = backtest.bootstrap_ic_gap(informed, informed, ret, 50, np.random.default_rng(0))
+    assert np.allclose(same, 0)  # identical scores: the gap is exactly zero in every draw

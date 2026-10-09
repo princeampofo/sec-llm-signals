@@ -16,7 +16,8 @@ EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ a
                                               │                          │
                                               ▼                          ▼
           10-K documents ─▶ MD&A (Item 7) ─┬▶ LM word counts ──────┬▶ change vs. previous 10-K
-                                           └▶ LLM scores (cached) ─┘
+                                           ├▶ LLM scores (cached) ─┘
+                                           └▶ anonymized excerpts ─▶ LLM scores ─▶ memorization test
                                               │
                          CIK ↔ ticker map ─▶ Yahoo prices ─▶ forward returns, coverage report
                                                       │
@@ -34,6 +35,8 @@ EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ a
 | Baseline signal | `signals.py` | Change in each share vs. the same company's previous 10-K |
 | LLM scores | `llm_scorer.py` | Tone, hedging and risk severity in [−1, 1] per MD&A, validated JSON, cached |
 | LLM signal | `signals.py` | Change in LLM pessimism vs. the same company's previous 10-K |
+| Anonymization | `anonymize.py` | The same excerpts with names, tickers, people, products, dates and years masked |
+| Memorization test | `cli.py` | Original vs. anonymized signal, before vs. after the model's training cutoff |
 | Prices | `market.py` | Split- and dividend-adjusted daily closes, behind a swappable price-source interface |
 | Forward returns | `market.py` | 21-trading-day return from the first trading day after acceptance |
 | Coverage | `market.py` | Share of universe-months with prices; list of missing companies |
@@ -84,6 +87,12 @@ EDGAR quarterly indexes ─▶ 10-K list ─▶ S&P 500 universe filter ─▶ a
   model, so the comparison is one config change away.
 - **LLM scores are cached by (filing, section, prompt version, model).** A rerun makes no
   model calls, and changing the prompt or the model never mixes old and new scores.
+- **Anonymization changes only the identifying details.** The anonymized score reads the
+  same excerpt as the original (checked: identical token counts for all 2,269), masked by
+  rules for the company's own EDGAR names and tickers, a spaCy entity recognizer for other
+  names, and patterns for dates and years. Entities made only of ordinary 10-K vocabulary
+  ("Consolidated Financial Statements", "Goodwill") are kept, so the text is not degraded
+  for reasons unrelated to memorization. The masking rules are versioned in the score cache.
 - **Every backtest run is logged** to `results/trials.csv` with a hash of its settings, so the
   number of variants tried is on record for multiple-testing adjustments.
 - **Reused Yahoo symbols are rejected.** A price series that does not overlap the company's
@@ -140,6 +149,38 @@ scored below zero), so the 3B model's hedging score is unreliable; that is the f
 fix, with a larger model or a revised prompt. Details: `results/backtest_llm_change.md`,
 `results/llm_scoring_report.json`.
 
+## Memorization test
+
+A model that read about a company's later fortunes during training could "predict" returns
+for filings written before its cutoff by recognizing the company and the year. To test
+this, the same excerpts are rescored with the company's names and tickers, other companies,
+people, products, dates and years masked, for every filing accepted after the model's stated
+cutoff (December 2023; 971 pairs) and a random 500 from before it. Memorization would show
+up as the original text beating the anonymized text before the cutoff, but not after.
+
+| Filing-level IC with the 21-day return (t) | Original | Anonymized |
+|---|---|---|
+| Before cutoff (470 filings) | −0.019 (−0.42) | −0.018 (−0.38) |
+| After cutoff (940 filings) | 0.014 (0.43) | 0.009 (0.28) |
+
+| Factor alpha, annualized (Newey-West t) | Original | Anonymized |
+|---|---|---|
+| Before cutoff (49 months) | 0.1% (0.01) | 0.6% (0.16) |
+| After cutoff (23 months) | 1.0% (0.53) | 2.8% (1.15) |
+
+The difference in differences of IC is −0.007, with a 95% bootstrap interval of −0.090 to
++0.075: no sign of memorization, but the test can only rule out a large effect. Masking
+changes the reading only modestly (Spearman 0.82–0.84 between original and anonymized
+pessimism), so the anonymized text keeps its content.
+
+Anonymization was checked by hand on 30 filings. The company's own name, ticker, people,
+dates and years are reliably removed; 2 of the 30 excerpts kept a third-party or product
+name ("Nash", a lowercase drug name), and a few companies stay recognizable from what they
+describe (a cystic-fibrosis drug maker, an airline with grounded 737 MAX jets). Both make
+the test more likely to miss memorization than to invent it. Automatic checks over all
+2,269 excerpts find no remaining own-company names, tickers or years
+(`results/anonymization_report.json`). Full report: `results/memorization.md`.
+
 ## Signal coverage
 
 | | |
@@ -169,8 +210,8 @@ All parameters (dates, rate limits, horizons, thresholds) live in `config.yaml`.
 ## Repository layout
 
 ```
-src/secsignals/   pipeline code (edgar, sections, market, dictionary, llm_scorer, signals,
-                  backtest, factors, cli)
+src/secsignals/   pipeline code (edgar, sections, market, dictionary, llm_scorer, anonymize,
+                  signals, backtest, factors, cli)
 tests/            unit tests + 5 saved 10-K fixtures (no network needed)
 reference/        hand-checked ticker overrides
 results/          reports and logs produced by the pipeline

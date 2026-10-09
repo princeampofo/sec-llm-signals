@@ -107,6 +107,31 @@ def information_coefficient(score: pd.Series, ret: pd.Series) -> float:
     return float(score.corr(ret, method="spearman"))
 
 
+def filing_ic(score: pd.Series, ret: pd.Series) -> dict:
+    """Spearman correlation, across filings, of score with the return after each filing.
+
+    Uses every filing once (no monthly portfolios), so it keeps power when a sample is too
+    thin for quintiles. t = rho * sqrt((n - 2) / (1 - rho^2)).
+    """
+    ok = score.notna() & ret.notna()
+    n = int(ok.sum())
+    rho = information_coefficient(score[ok], ret[ok]) if n > 2 else float("nan")
+    t = rho * np.sqrt((n - 2) / (1 - rho**2)) if n > 2 and abs(rho) < 1 else float("nan")
+    return {"n": n, "ic": rho, "t": float(t)}
+
+
+def bootstrap_ic_gap(a: pd.Series, b: pd.Series, ret: pd.Series, n_boot: int,
+                     rng: np.random.Generator) -> np.ndarray:  # fmt: skip
+    """Bootstrap draws of filing_ic(a) - filing_ic(b), resampling filings in pairs (both
+    scores of a filing stay together, so the shared return noise cancels)."""
+    df = pd.DataFrame({"a": a, "b": b, "r": ret}).dropna().to_numpy()
+    draws = np.empty(n_boot)
+    for i in range(n_boot):
+        s = pd.DataFrame(df[rng.integers(0, len(df), len(df))], columns=["a", "b", "r"])
+        draws[i] = s["a"].corr(s["r"], method="spearman") - s["b"].corr(s["r"], method="spearman")
+    return draws
+
+
 def holding_month_end(t: pd.Timestamp) -> pd.Timestamp:
     """Calendar month-end of the month held after rebalancing on t (factor-data label).
 

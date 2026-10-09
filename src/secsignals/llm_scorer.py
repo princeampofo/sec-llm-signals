@@ -265,6 +265,22 @@ def backend_from_config(cfg: dict) -> Backend:
     raise ValueError(f"unknown llm backend {c['backend']!r}")
 
 
+def token_counter_from_config(cfg: dict) -> Callable[[str], int]:
+    """The scoring model's token counter, without loading the model weights."""
+    from transformers import AutoTokenizer
+
+    c = cfg["llm"]
+    if c["backend"] == "mlx":
+        from huggingface_hub import snapshot_download
+
+        path = snapshot_download(c["model"], revision=c["model_revision"],
+                                 allow_patterns=["*.json", "*.model", "*.txt"])  # fmt: skip
+        tokenizer = AutoTokenizer.from_pretrained(path)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(c["tokenizer_repo"], revision=c["model_revision"])
+    return lambda text: len(tokenizer.encode(text, add_special_tokens=False))
+
+
 # ---------------------------------------------------------------- cache
 
 CACHE_COLUMNS = [
@@ -300,9 +316,10 @@ class ScoreCache:
         self.db.execute(f"INSERT OR REPLACE INTO scores VALUES ({marks})", values)
         self.db.commit()
 
-    def frame(self, prompt_version: str, model: str) -> pd.DataFrame:
-        return pd.read_sql_query("SELECT * FROM scores WHERE prompt_version=? AND model=?",
-                                 self.db, params=(prompt_version, model))  # fmt: skip
+    def frame(self, prompt_version: str, model: str, section: str = "mda") -> pd.DataFrame:
+        return pd.read_sql_query(
+            "SELECT * FROM scores WHERE prompt_version=? AND model=? AND section=?",
+            self.db, params=(prompt_version, model, section))  # fmt: skip
 
 
 # ---------------------------------------------------------------- scoring run
@@ -346,23 +363,33 @@ def score_sections(
     justify: bool = False,
     limit: int | None = None,
     progress_every: int = 25,
+    section: str = "mda",
 ) -> RunStats:
-    """Score every section not already in the cache (one model call per new filing)."""
+    """Score every section not already in the cache (one model call per new filing).
+
+    sections has either a "text" column (the excerpt is selected here) or ready-made
+    "excerpt" and "excerpt_method" columns (e.g. anonymized excerpts, cached under their
+    own section name).
+    """
     version = prompt_version + ("-justify" if justify else "")
     done = cache.keys(version, backend.model_id)
-    todo = sections[[(a, "mda") not in done for a in sections["accession"]]]
+    todo = sections[[(a, section) not in done for a in sections["accession"]]]
     stats = RunStats(to_score=len(sections), cached=len(sections) - len(todo))
     if limit is not None:
         todo = todo.head(limit)
     started = time.monotonic()
     for i, row in enumerate(todo.itertuples(index=False), start=1):
-        excerpt, method, tokens = select_excerpt(row.text, budget, min_forward,
-                                                 backend.count_tokens)  # fmt: skip
+        if "excerpt" in sections:
+            excerpt, method = row.excerpt, row.excerpt_method
+            tokens = backend.count_tokens(excerpt)
+        else:
+            excerpt, method, tokens = select_excerpt(row.text, budget, min_forward,
+                                                     backend.count_tokens)  # fmt: skip
         t0 = time.monotonic()
         scores, error, raw, attempts = score_one(backend, excerpt, justify, max_new_tokens,
                                                  max_retries)  # fmt: skip
         stats.model_calls += attempts
-        record = {"accession": row.accession, "section": "mda", "prompt_version": version,
+        record = {"accession": row.accession, "section": section, "prompt_version": version,
                   "model": backend.model_id, "status": "valid" if scores else "invalid",
                   "excerpt_method": method, "excerpt_tokens": tokens, "attempts": attempts,
                   "error": error, "raw_output": raw, "seconds": time.monotonic() - t0,

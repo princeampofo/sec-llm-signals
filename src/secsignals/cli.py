@@ -8,13 +8,24 @@ import json
 import logging
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from secsignals import backtest, dictionary, edgar, factors, llm_scorer, market, sections, signals
+from secsignals import (
+    anonymize,
+    backtest,
+    dictionary,
+    edgar,
+    factors,
+    llm_scorer,
+    market,
+    sections,
+    signals,
+)
 from secsignals.config import load_config
 
 
@@ -205,13 +216,19 @@ def cmd_documents(cfg: dict, args: argparse.Namespace) -> None:
     print(f"documents: {len(docs)} 10-Ks ({len(docs) - len(universe)} from before index entry)")
 
 
-def cmd_dictionary(cfg: dict, args: argparse.Namespace) -> None:
+def _lm_master(cfg: dict) -> tuple[pd.DataFrame, str]:
     d = cfg["dictionary"]
     raw = edgar.client_from_config(cfg).get(d["url"])
     digest = hashlib.sha256(raw).hexdigest()
     if d["sha256"] and digest != d["sha256"]:
         sys.exit(f"dictionary checksum {digest} != pinned {d['sha256']}: the file changed")
-    lexicon = dictionary.build_lexicon(dictionary.parse_master_dictionary(raw), d["categories"])
+    return dictionary.parse_master_dictionary(raw), digest
+
+
+def cmd_dictionary(cfg: dict, args: argparse.Namespace) -> None:
+    d = cfg["dictionary"]
+    master, digest = _lm_master(cfg)
+    lexicon = dictionary.build_lexicon(master, d["categories"])
     secs = pd.read_parquet(_interim(cfg, "sections_documents.parquet"))
     counts = dictionary.score_sections(secs, lexicon)
     counts.to_parquet(_processed(cfg, "lm_counts.parquet"), index=False)
@@ -482,6 +499,242 @@ def cmd_llm_signals(cfg: dict, args: argparse.Namespace) -> None:
     print("PASS")
 
 
+# ---------------------------------------------------------------- memorization experiment
+
+
+def _memorization_pairs(cfg: dict) -> pd.DataFrame:
+    """Filing pairs in the experiment: every LLM-signal 10-K accepted after the model's
+    training cutoff, plus a seeded random sample of the earlier ones."""
+    c, mm = cfg["llm"], cfg["memorization"]
+    sig = pd.read_parquet(_processed(cfg, "signals_llm.parquet"))
+    day = sig["known_at"].dt.tz_convert(edgar.EASTERN).dt.tz_localize(None).dt.normalize()
+    after = day > pd.Timestamp(c["training_cutoff"])
+    pre = sig[~after].sample(n=min(mm["pre_cutoff_sample"], int((~after).sum())),
+                             random_state=cfg["project"]["seed"])  # fmt: skip
+    pairs = pd.concat([pre.assign(period="pre_cutoff"), sig[after].assign(period="post_cutoff")])
+    cols = ["accession", "cik", "acceptance_datetime", "prev_accession", "prev_acceptance",
+            "known_at", "period"]  # fmt: skip
+    return pairs[cols].sort_values("accession").reset_index(drop=True)
+
+
+def _identities(cfg: dict, accessions: set[str]) -> dict[str, anonymize.Identity]:
+    """Names (every EDGAR name the company filed under) and tickers per filing; a combined
+    filing gets the names of all its co-registrants."""
+    filings = pd.read_parquet(_interim(cfg, "filings_documents.parquet"),
+                              columns=["accession", "cik"])  # fmt: skip
+    index = pd.read_parquet(_interim(cfg, "filing_index.parquet"), columns=["cik", "company"])
+    names = index.groupby("cik")["company"].agg(set)
+    tmap = pd.read_parquet(_interim(cfg, "ticker_map.parquet")).dropna(subset=["cik"])
+    tmap["cik"] = tmap["cik"].astype(int)
+    tickers = tmap.groupby("cik").apply(
+        lambda g: (set(g["ticker"]) | set(g["yahoo_symbol"].dropna())) - {"-"},
+        include_groups=False)  # fmt: skip
+    out = {}
+    for acc, g in filings[filings["accession"].isin(accessions)].groupby("accession"):
+        ciks = [int(x) for x in g["cik"]]
+        n = set().union(*(names.get(k, set()) for k in ciks))
+        t = set().union(*(tickers.get(k, set()) for k in ciks))
+        out[acc] = anonymize.Identity(tuple(sorted(n)), tuple(sorted(t)))
+    return out
+
+
+def cmd_anonymize(cfg: dict, args: argparse.Namespace) -> None:
+    """Same excerpt as the original scoring, then masked; plus leak checks and a sheet of
+    side-by-side examples for the manual spot check."""
+    c, mm = cfg["llm"], cfg["memorization"]
+    pairs = _memorization_pairs(cfg)
+    needed = set(pairs["accession"]) | set(pairs["prev_accession"])
+    secs = pd.read_parquet(_interim(cfg, "sections_documents.parquet"),
+                           columns=["accession", "status", "text"])  # fmt: skip
+    secs = secs[secs["accession"].isin(needed) & (secs["status"] == "ok")]
+    secs = secs.drop_duplicates("accession").sort_values("accession")
+    identities = _identities(cfg, needed)
+    count_tokens = llm_scorer.token_counter_from_config(cfg)
+    entities = anonymize.spacy_entities(mm["ner_model"])
+    common_words = frozenset(_lm_master(cfg)[0]["Word"])
+    rows = []
+    for acc, text in zip(secs["accession"], secs["text"], strict=True):
+        ident = identities[acc]
+        excerpt, method, tokens = llm_scorer.select_excerpt(
+            text, c["excerpt_tokens"], c["min_forward_tokens"], count_tokens)  # fmt: skip
+        masked, counts = anonymize.anonymize(excerpt, ident, entities, common_words)
+        masks = {f"masked_{k.strip('[]').lower()}": counts.get(k, 0) for k in anonymize.PRIORITY}
+        leaks = {f"leak_{k}": v for k, v in anonymize.leaks(masked, ident).items()}
+        rows.append({"accession": acc, "excerpt_method": method, "original_tokens": tokens,
+                     "original": excerpt, "excerpt": masked, "company": "; ".join(ident.names),
+                     **masks, **leaks})  # fmt: skip
+    out = pd.DataFrame(rows)
+    out.to_parquet(_processed(cfg, "anonymized_excerpts.parquet"), index=False)
+    # The excerpt must be the one the original score read: compare token counts.
+    orig = _llm_cache(cfg).frame(c["prompt_version"], _llm_model_id(cfg))
+    same = out.merge(orig[["accession", "excerpt_tokens"]], on="accession")
+    masked_cols = [col for col in out if col.startswith("masked_")]
+    leak_cols = [col for col in out if col.startswith("leak_")]
+    report = {
+        "excerpts": len(out),
+        "pairs": {k: int(v) for k, v in pairs["period"].value_counts().items()},
+        "same_excerpt_as_original_score": round(float(
+            (same["original_tokens"] == same["excerpt_tokens"].astype(float)).mean()), 4),
+        "mean_masks_per_excerpt": out[masked_cols].mean().round(2).to_dict(),
+        "share_with_masks": (out[masked_cols] > 0).mean().round(3).to_dict(),
+        "share_with_leaks": (out[leak_cols] > 0).mean().round(4).to_dict(),
+    }  # fmt: skip
+    _results(cfg, "anonymization_report.json").write_text(json.dumps(report, indent=2) + "\n")
+    check = out.sample(n=min(mm["spot_check"], len(out)), random_state=cfg["project"]["seed"])
+    check[["accession", "company", "original", "excerpt", *masked_cols, *leak_cols]].rename(
+        columns={"excerpt": "anonymized"}).sort_values("accession").to_csv(
+        _results(cfg, "anonymization_spot_check.csv"), index=False)  # fmt: skip
+    print(json.dumps(report, indent=2))
+
+
+def _anonymized_section(cfg: dict) -> str:
+    """Cache section name for anonymized scores; versioned, so changed masking rules
+    never reuse scores of differently masked text."""
+    return f"mda_anonymized_v{cfg['memorization']['anonymizer_version']}"
+
+
+def cmd_llm_score_anonymized(cfg: dict, args: argparse.Namespace) -> None:
+    c = cfg["llm"]
+    excerpts = pd.read_parquet(_processed(cfg, "anonymized_excerpts.parquet"),
+                               columns=["accession", "excerpt", "excerpt_method"])  # fmt: skip
+    backend = llm_scorer.backend_from_config(cfg)
+    stats = llm_scorer.score_sections(
+        excerpts, backend, _llm_cache(cfg), c["prompt_version"], c["excerpt_tokens"],
+        c["min_forward_tokens"], c["max_new_tokens"], c["max_retries"], limit=args.limit,
+        section=_anonymized_section(cfg),
+    )  # fmt: skip
+    print(f"{backend.model_id} (anonymized): {stats.to_score} excerpts, {stats.cached} already "
+          f"cached, {stats.valid + stats.invalid} scored now ({stats.invalid} invalid), "
+          f"new model calls: {stats.model_calls}")  # fmt: skip
+
+
+def cmd_memorization(cfg: dict, args: argparse.Namespace) -> None:
+    """2 x 2: original vs. anonymized text, filings before vs. after the training cutoff."""
+    c, mm, b = cfg["llm"], cfg["memorization"], cfg["backtest"]
+    pairs = _memorization_pairs(cfg)
+    cache, model = _llm_cache(cfg), _llm_model_id(cfg)
+
+    def change(section: str) -> pd.DataFrame:
+        f = cache.frame(c["prompt_version"], model, section)
+        sig = signals.llm_change_signals(pairs, f[f["status"] == "valid"])
+        return sig[["accession", "cik", "known_at", "pessimism", "llm_change"]]
+
+    data = change("mda").merge(change(_anonymized_section(cfg)).drop(columns=["cik", "known_at"]),
+                               on="accession", suffixes=("_original", "_anonymized"))  # fmt: skip
+    data = data.dropna(subset=["llm_change_original", "llm_change_anonymized"])
+    rets = pd.read_parquet(_interim(cfg, "filing_returns.parquet"))
+    data = data.merge(pairs[["accession", "period"]], on="accession").merge(
+        rets[["accession", "fwd_return"]].drop_duplicates("accession"), on="accession", how="left")
+    sign = b["signals"]["llm_change"]["sign"]
+    inputs = _backtest_inputs(cfg)
+    factor_data, vintage = _load_factors(cfg)
+    rng = np.random.default_rng(cfg["project"]["seed"])
+    cells, gaps, agreement = {}, {}, {}
+    for period in ("pre_cutoff", "post_cutoff"):
+        d = data[data["period"] == period]
+        for version in ("original", "anonymized"):
+            score = sign * d[f"llm_change_{version}"]
+            panel = _panel(cfg, d[["cik", "known_at"]].assign(score=score), inputs)
+            monthly = backtest.long_short(panel, b["quantiles"], b["cost_bps_per_side"],
+                                          mm["min_stocks"])  # fmt: skip
+            summary = backtest.summarize(monthly)
+            reg = factors.factor_regression(monthly.set_index("period_end")["ret_ls"], factor_data,
+                                            b["newey_west_lags"])  # fmt: skip
+            cells[f"{period}/{version}"] = {"filing_ic": backtest.filing_ic(score, d["fwd_return"]),
+                                            "monthly": summary, "alpha": reg}  # fmt: skip
+            settings = {k: b[k] for k in ("quantiles", "signal_max_age_days", "cost_bps_per_side")}
+            settings |= {"min_stocks": mm["min_stocks"], "sign": sign, "period": period,
+                         "text": version, "filings": len(d),
+                         "seed": cfg["project"]["seed"]}  # fmt: skip
+            _log_trial(cfg, f"llm_change_{period}_{version}", settings, summary,
+                       {"gross": reg})  # fmt: skip
+        draws = backtest.bootstrap_ic_gap(sign * d["llm_change_original"],
+                                          sign * d["llm_change_anonymized"], d["fwd_return"],
+                                          mm["bootstrap"], rng)  # fmt: skip
+        gaps[period] = draws
+        po, pa = d["pessimism_original"], d["pessimism_anonymized"]
+        agreement[period] = {
+            "filings": len(d),
+            "pessimism_spearman": float(po.corr(pa, method="spearman")),
+            "change_spearman": float(d["llm_change_original"].corr(d["llm_change_anonymized"],
+                                                                   method="spearman")),
+            "mean_abs_pessimism_shift": float((po - pa).abs().mean()),
+        }  # fmt: skip
+
+    def ci(x: np.ndarray) -> dict:
+        lo, hi = np.nanpercentile(x, [2.5, 97.5])
+        return {"low": float(lo), "high": float(hi)}
+
+    gap = {p: cells[f"{p}/original"]["filing_ic"]["ic"]
+           - cells[f"{p}/anonymized"]["filing_ic"]["ic"]
+           for p in ("pre_cutoff", "post_cutoff")}  # fmt: skip
+    tests = {f"{p}_gap": {"value": gap[p], "ci95": ci(gaps[p])} for p in gap}
+    tests["difference_in_differences"] = {
+        "value": gap["pre_cutoff"] - gap["post_cutoff"],
+        "ci95": ci(gaps["pre_cutoff"] - gaps["post_cutoff"]),
+    }
+    out = {"model": model, "training_cutoff": str(c["training_cutoff"]), "cells": cells,
+           "ic_gap_tests": tests, "agreement": agreement, "factor_vintage": vintage}  # fmt: skip
+    _results(cfg, "memorization.json").write_text(json.dumps(out, indent=2, default=str) + "\n")
+    _results(cfg, "memorization.md").write_text(_memorization_md(out, mm))
+    print(_memorization_md(out, mm))
+
+
+def _memorization_md(out: dict, mm: dict) -> str:
+    cells, tests, agree = out["cells"], out["ic_gap_tests"], out["agreement"]
+
+    def row(label: str, get: Callable[[dict], str]) -> str:  # both periods x both texts
+        vals = []
+        for p in ("pre_cutoff", "post_cutoff"):
+            vals += [get(cells[f"{p}/original"]), get(cells[f"{p}/anonymized"])]
+        return f"| {label} | " + " | ".join(vals) + " |"
+
+    def fic(cell: dict) -> str:
+        return f"{cell['filing_ic']['ic']:.4f} ({cell['filing_ic']['t']:.2f})"
+
+    def mic(cell: dict) -> str:
+        return f"{cell['monthly']['mean_ic']:.4f} ({cell['monthly']['ic_t']:.2f})"
+
+    def alpha(cell: dict) -> str:
+        return f"{cell['alpha']['alpha_annualized']:.2%} ({cell['alpha']['alpha_t']:.2f})"
+
+    def ci(t: dict) -> str:
+        return f"{t['value']:+.4f} [{t['ci95']['low']:+.4f}, {t['ci95']['high']:+.4f}]"
+
+    lines = [
+        "# Memorization test", "",
+        f"Model `{out['model']}`, stated training cutoff {out['training_cutoff']}. The LLM change "
+        "signal is rebuilt from anonymized excerpts (company names, tickers, people, products, "
+        "other organizations, dates and years masked) and compared with the original, for "
+        f"filings accepted before the cutoff ({agree['pre_cutoff']['filings']} randomly sampled "
+        f"pairs) and after it ({agree['post_cutoff']['filings']} pairs, all of them).", "",
+        "If the model used memorized knowledge of what happened next, the original text would "
+        "beat the anonymized text before the cutoff but not after it.", "",
+        "| | Before cutoff, original | Before cutoff, anonymized | After cutoff, original "
+        "| After cutoff, anonymized |", "|---|---|---|---|---|",
+        row("Filings with a 21-day return", lambda x: str(x["filing_ic"]["n"])),
+        row("Filing-level IC with the 21-day return (t)", fic),
+        row("Mean monthly IC, quintile portfolios (t)", mic),
+        row("Months", lambda x: str(x["monthly"]["months"])),
+        row("Factor alpha, annualized (Newey-West t)", alpha), "",
+        "## Original minus anonymized filing-level IC (95% bootstrap interval)", "",
+        f"- Before cutoff: {ci(tests['pre_cutoff_gap'])}",
+        f"- After cutoff: {ci(tests['post_cutoff_gap'])}",
+        f"- Difference in differences: {ci(tests['difference_in_differences'])}", "",
+        "## How much anonymization changes the reading", "",
+        "| | Before cutoff | After cutoff |", "|---|---|---|",
+        *(f"| {label} | {agree['pre_cutoff'][key]:{fmt}} | {agree['post_cutoff'][key]:{fmt}} |"
+          for label, key, fmt in (
+              ("Spearman, original vs. anonymized pessimism", "pessimism_spearman", ".2f"),
+              ("Spearman, original vs. anonymized change", "change_spearman", ".2f"),
+              ("Mean absolute pessimism shift", "mean_abs_pessimism_shift", ".3f"))), "",
+        f"Monthly portfolios need at least {mm['min_stocks']} scored stocks; the before-cutoff "
+        "sample is thin, so its monthly numbers are noisy. With 500 to 1,000 filings per "
+        "cell, only a large memorization effect would be detectable.",
+    ]  # fmt: skip
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="secsignals")
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
@@ -495,6 +748,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--justify", action="store_true",
                    help="score the hand-check sample with written justifications")
     sub.add_parser("llm-signals")
+    sub.add_parser("anonymize")
+    sub.add_parser("llm-score-anonymized").add_argument("--limit", type=int)
+    sub.add_parser("memorization")
     for name in ("fetch", "sections", "check"):
         p = sub.add_parser(name)
         p.add_argument("--subset", default="sample")
@@ -510,7 +766,9 @@ def main(argv: list[str] | None = None) -> None:
                 "documents": cmd_documents, "dictionary": cmd_dictionary,
                 "signals": cmd_signals, "factors": cmd_factors, "backtest": cmd_backtest,
                 "sanity": cmd_sanity, "llm-score": cmd_llm_score,
-                "llm-signals": cmd_llm_signals}  # fmt: skip
+                "llm-signals": cmd_llm_signals, "anonymize": cmd_anonymize,
+                "llm-score-anonymized": cmd_llm_score_anonymized,
+                "memorization": cmd_memorization}  # fmt: skip
     commands[args.command](load_config(args.config), args)
 
 

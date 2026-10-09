@@ -1,0 +1,33 @@
+{
+  "excerpts": 2269,
+  "pairs": {
+    "post_cutoff": 971,
+    "pre_cutoff": 500
+  },
+  "same_excerpt_as_original_score": 1.0,
+  "mean_masks_per_excerpt": {
+    "masked_company": 1.01,
+    "masked_ticker": 0.13,
+    "masked_date": 0.96,
+    "masked_person": 0.3,
+    "masked_product": 0.08,
+    "masked_organization": 2.06,
+    "masked_name": 0.92,
+    "masked_year": 3.86
+  },
+  "share_with_masks": {
+    "masked_company": 0.342,
+    "masked_ticker": 0.033,
+    "masked_date": 0.45,
+    "masked_person": 0.134,
+    "masked_product": 0.039,
+    "masked_organization": 0.552,
+    "masked_name": 0.383,
+    "masked_year": 0.814
+  },
+  "share_with_leaks": {
+    "leak_company_name": 0.0,
+    "leak_ticker": 0.0,
+    "leak_year": 0.0
+  }
+}

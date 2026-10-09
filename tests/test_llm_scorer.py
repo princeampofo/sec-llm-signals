@@ -185,3 +185,18 @@ def test_llm_change_on_hand_made_example():
     assert r["llm_change"] == pytest.approx(0.4)
     assert r["d_tone"] == pytest.approx(-0.6)
     assert r["known_at"] == pairs["acceptance_datetime"].iloc[0]
+
+
+def test_ready_made_excerpts_are_cached_under_their_own_section(tmp_path):
+    cache = llm_scorer.ScoreCache(tmp_path / "scores.sqlite")
+    run(FakeBackend([]), cache, sections(2))  # original section scores
+    masked = pd.DataFrame({"accession": ["a0", "a1"], "excerpt": ["[COMPANY] expects growth."] * 2,
+                           "excerpt_method": ["forward_looking"] * 2})  # fmt: skip
+    backend = FakeBackend([])
+    stats = run(backend, cache, masked, section="mda_anonymized_v1")
+    assert stats.model_calls == 2  # the original scores do not count for the masked text
+    assert "[COMPANY] expects growth." in backend.calls[0][-1]["content"]
+    assert len(cache.frame("v1", "fake@0000000")) == 2  # default section: originals only
+    anon = cache.frame("v1", "fake@0000000", "mda_anonymized_v1")
+    assert len(anon) == 2 and set(anon["section"]) == {"mda_anonymized_v1"}
+    assert run(FakeBackend([]), cache, masked, section="mda_anonymized_v1").model_calls == 0
