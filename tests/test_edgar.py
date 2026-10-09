@@ -1,4 +1,5 @@
 import gzip
+import json
 from datetime import date
 from pathlib import Path
 
@@ -253,3 +254,16 @@ def test_fetch_one_downloads_primary_document(tmp_path):
     out = edgar.fetch_one(client, ARCHIVES, row)
     assert out["fetch_error"] is None
     assert edgar.read_cached(out["doc_path"]) == doc
+
+
+def test_parse_public_float_keeps_first_filing_and_plausible_values():
+    raw = json.dumps({"units": {"USD": [
+        {"end": "2023-03-31", "val": 18_700_000_000, "form": "10-K", "filed": "2023-11-17"},
+        {"end": "2023-03-31", "val": 18_700_000_000, "form": "10-K/A", "filed": "2024-01-26"},
+        {"end": "2024-03-29", "val": 27_304_085_267_000_000, "form": "10-K", "filed": "2024-11-15"},
+        {"end": "2024-06-30", "val": 5_000_000_000, "form": "S-1", "filed": "2024-08-01"},
+    ]}}).encode()  # fmt: skip
+    df = edgar.parse_public_float(raw)
+    assert len(df) == 1  # the 10-K/A repeat, the unit error and the non-10-K are dropped
+    assert df["filed"].iloc[0] == pd.Timestamp("2023-11-17")
+    assert df["value"].iloc[0] == 18.7e9

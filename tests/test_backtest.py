@@ -243,3 +243,51 @@ def test_bootstrap_ic_gap_centers_on_the_true_difference():
     assert lo < point < hi and lo > 0.3
     same = backtest.bootstrap_ic_gap(informed, informed, ret, 50, np.random.default_rng(0))
     assert np.allclose(same, 0)  # identical scores: the gap is exactly zero in every draw
+
+
+# ---------------------------------------------------------------- value weights, holding periods
+
+
+def test_value_weights_follow_size_and_skip_unsized_stocks():
+    t = pd.Timestamp("2021-01-29")
+    panel = pd.DataFrame({"date": t, "cik": range(10), "ticker": [f"T{i}" for i in range(10)],
+                          "symbol": [f"T{i}" for i in range(10)], "score": range(10),
+                          "ret": [0.0] * 8 + [0.10, 0.40],
+                          "size": [1.0] * 8 + [3.0, 1.0]})  # fmt: skip
+    m = backtest.long_short(panel, n_quantiles=5, cost_bps=0, min_stocks=5, weighting="value")
+    assert m["ret_long"].iloc[0] == pytest.approx(0.75 * 0.10 + 0.25 * 0.40)
+    unsized = panel.assign(size=[np.nan] + [1.0] * 9)
+    m = backtest.long_short(unsized, 5, 0, 5, weighting="value")
+    assert m["n_stocks"].iloc[0] == 9
+
+
+def test_add_size_uses_only_floats_filed_before_t_and_grows_them_with_price():
+    prices = pd.DataFrame({"date": pd.to_datetime(["2020-06-30", "2021-03-31"]), "symbol": "A",
+                           "adj_close": [50.0, 75.0]})  # fmt: skip
+    floats = pd.DataFrame({"cik": [1, 1], "end": pd.to_datetime(["2020-06-30", "2021-06-30"]),
+                           "value": [1e9, 9e9],
+                           "filed": pd.to_datetime(["2021-02-20", "2021-03-31"])})  # fmt: skip
+    panel = pd.DataFrame({"date": [pd.Timestamp("2021-03-31")], "cik": [1], "ticker": ["A"],
+                          "symbol": ["A"], "score": [0.0], "ret": [0.0]})  # fmt: skip
+    out = backtest.add_size(panel, floats, prices, max_age_days=550)
+    # The second float is filed on t itself: not yet usable. The first grows 50 -> 75.
+    assert out["size"].iloc[0] == pytest.approx(1.5e9)
+    stale = backtest.add_size(panel, floats, prices, max_age_days=200)
+    assert stale["size"].isna().all()
+
+
+def test_quarterly_rebalance_dates_and_labels():
+    cal = pd.bdate_range("2021-01-01", "2021-12-31")
+    dates = backtest.rebalance_dates(cal, "2021-01-01", "2021-12-31", every_months=3)
+    assert [d.month for d in dates] == [1, 4, 7, 10]
+    assert backtest.holding_month_end(dates[0], 3) == pd.Timestamp("2021-04-30")
+
+
+def test_factors_compound_over_holding_periods():
+    idx = pd.date_range("2021-01-31", periods=6, freq="ME")
+    f = pd.DataFrame({"Mkt-RF": [0.1, 0.1, 0.1, 0.0, 0.0, 0.0]}, index=idx)
+    ends = pd.DatetimeIndex(["2021-03-31", "2021-06-30", "2021-08-31"])
+    q = factors.to_holding_periods(f, ends, 3)
+    assert q.loc["2021-03-31", "Mkt-RF"] == pytest.approx(1.1**3 - 1)
+    assert q.loc["2021-06-30", "Mkt-RF"] == 0
+    assert pd.Timestamp("2021-08-31") not in q.index  # months missing from the factor data

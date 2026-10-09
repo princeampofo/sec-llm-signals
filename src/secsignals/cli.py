@@ -23,8 +23,10 @@ from secsignals import (
     factors,
     llm_scorer,
     market,
+    report,
     sections,
     signals,
+    stats,
 )
 from secsignals.config import load_config
 
@@ -267,16 +269,17 @@ def _load_factors(cfg: dict) -> tuple[pd.DataFrame, str | None]:
     return factors.load_factors(client.get(f["five_factor_url"]), client.get(f["momentum_url"]))
 
 
-def _backtest_inputs(cfg: dict) -> tuple:
-    """(period returns, membership, ticker map, rebalance dates)."""
+def _backtest_inputs(cfg: dict, every_months: int = 1) -> tuple:
+    """(period returns, membership, ticker map, rebalance dates); every_months > 1 for
+    multi-month holding periods."""
     b, m = cfg["backtest"], cfg["market"]
     prices = pd.read_parquet(_interim(cfg, "prices.parquet"))
     calendar = pd.DatetimeIndex(
         prices.loc[prices["symbol"] == m["calendar_symbol"], "date"]
     ).sort_values()
-    # One extra month-end so the last rebalance has a holding period.
-    end = pd.Timestamp(b["end"]) + pd.offsets.MonthEnd(1)
-    dates = backtest.rebalance_dates(calendar, b["start"], end)
+    # One extra holding period so the last rebalance has returns.
+    end = pd.Timestamp(b["end"]) + pd.offsets.MonthEnd(every_months)
+    dates = backtest.rebalance_dates(calendar, b["start"], end, every_months)
     returns = backtest.period_returns(prices, dates)
     membership = pd.read_parquet(_interim(cfg, "membership.parquet"))
     tmap = pd.read_parquet(_interim(cfg, "ticker_map.parquet"))
@@ -497,6 +500,106 @@ def cmd_llm_signals(cfg: dict, args: argparse.Namespace) -> None:
     if report["valid_share"] < c["min_valid_share"]:
         sys.exit(f"FAIL: valid LLM scores for {report['valid_share']:.1%} of filings in scope")
     print("PASS")
+
+
+# ---------------------------------------------------------------- robustness
+
+
+def cmd_size(cfg: dict, args: argparse.Namespace) -> None:
+    """Public float of every universe company, from its 10-K cover pages (value weights)."""
+    tmap = pd.read_parquet(_interim(cfg, "ticker_map.parquet")).dropna(subset=["cik"])
+    ciks = tmap["cik"].astype(int).unique()
+    floats = edgar.fetch_public_float(edgar.client_from_config(cfg), ciks)
+    floats.to_parquet(_interim(cfg, "public_float.parquet"), index=False)
+    print(f"public float: {floats['cik'].nunique()}/{len(ciks)} companies, {len(floats)} values")
+
+
+def _evaluate(cfg: dict, monthly: pd.DataFrame, factor_data: pd.DataFrame,
+              months_held: int) -> tuple[dict, dict]:  # fmt: skip
+    """(summary, factor regressions) for one backtest's holding-period returns."""
+    b = cfg["backtest"]
+    summary = backtest.summarize(monthly, 12 // months_held)
+    f = factor_data if months_held == 1 else factors.to_holding_periods(
+        factor_data, pd.DatetimeIndex(monthly["period_end"]), months_held)  # fmt: skip
+    returns = monthly.set_index("period_end")
+    regs = {k: factors.factor_regression(returns[col], f, b["newey_west_lags"], 12 // months_held)
+            for k, col in (("gross", "ret_ls"), ("net", "ret_ls_net"))}  # fmt: skip
+    return summary, regs
+
+
+def _robustness_row(name: str, variant: str, summary: dict, regs: dict) -> dict:
+    g, n = summary["gross"], summary["net"]
+    return {
+        "signal": name, "variant": variant, "periods": summary["months"],
+        "first_period": summary["first_period"], "last_period": summary["last_period"],
+        "mean_ic": summary["mean_ic"], "ic_t": summary["ic_t"],
+        "annual_return_gross": g["annual_return"], "sharpe_gross": g["sharpe"],
+        "annual_return_net": n["annual_return"], "sharpe_net": n["sharpe"],
+        "alpha_annualized": regs["gross"]["alpha_annualized"], "alpha_t": regs["gross"]["alpha_t"],
+        "avg_turnover": summary["avg_turnover"], "avg_stocks": summary["avg_stocks"],
+    }  # fmt: skip
+
+
+def cmd_robustness(cfg: dict, args: argparse.Namespace) -> None:
+    """Baseline variations (horizon, costs, weighting, subperiods), each logged as a trial,
+    then the deflated Sharpe ratio of each baseline given every trial on record."""
+    b, r = cfg["backtest"], cfg["robustness"]
+    keys = ("start", "end", "quantiles", "signal_max_age_days", "cost_bps_per_side", "min_stocks")
+    factor_data, _ = _load_factors(cfg)
+    prices = pd.read_parquet(_interim(cfg, "prices.parquet"))
+    floats = pd.read_parquet(_interim(cfg, "public_float.parquet"))
+    monthly_inputs = _backtest_inputs(cfg)
+    long_inputs = _backtest_inputs(cfg, r["horizon_months"])
+    rows, baselines = [], {}
+    for name in r["signals"]:
+        spec = b["signals"][name]
+        sig = pd.read_parquet(_processed(cfg, spec["file"])).dropna(subset=[spec["column"]])
+        sig = sig[["cik", "known_at"]].assign(score=spec["sign"] * sig[spec["column"]])
+        panel = backtest.add_size(_panel(cfg, sig, monthly_inputs), floats, prices,
+                                  r["size_max_age_days"])  # fmt: skip
+        base = {k: b[k] for k in keys} | {"sign": spec["sign"]}
+        q, cost, min_n = b["quantiles"], b["cost_bps_per_side"], b["min_stocks"]
+        k = r["horizon_months"]
+        monthly = backtest.long_short(panel, q, cost, min_n)
+        baselines[name] = monthly
+        variants = [("baseline", monthly, 1, {})]
+        variants += [(f"costs_{c}bp", backtest.long_short(panel, q, c, min_n), 1,
+                      {"cost_bps_per_side": c}) for c in r["costs_bps"]]  # fmt: skip
+        variants.append(("value_weighted", backtest.long_short(panel, q, cost, min_n, "value"),
+                         1, {"weighting": "value"}))  # fmt: skip
+        held = backtest.long_short(_panel(cfg, sig, long_inputs), q, cost, min_n, months_held=k)
+        variants.append((f"horizon_{k}m", held, k, {"months_held": k}))
+        for start, end in r["subperiods"]:
+            s, e = pd.Timestamp(start), pd.Timestamp(end)
+            sub = monthly[(monthly["rebalance_date"] >= s) & (monthly["rebalance_date"] <= e)]
+            if len(sub) >= 12:
+                variants.append((f"{s.year}_{e.year}", sub.reset_index(drop=True), 1,
+                                 {"start": start, "end": end}))  # fmt: skip
+        for variant, m, months_held, changes in variants:
+            summary, regs = _evaluate(cfg, m, factor_data, months_held)
+            if variant != "baseline":  # the baseline is already logged by the backtest stage
+                _log_trial(cfg, name, base | changes, summary, regs)
+            rows.append(_robustness_row(name, variant, summary, regs))
+    table = pd.DataFrame(rows)
+    table.to_csv(_results(cfg, "robustness.csv"), index=False)
+    # Deflated Sharpe ratio: every distinct trial on record counts.
+    trials = pd.read_csv(_results(cfg, "trials.csv"))
+    sharpes = stats.trial_sharpes(trials)
+    dsr = {name: stats.deflated_sharpe(m["ret_ls_net"], len(sharpes), float(sharpes.var()))
+           for name, m in baselines.items()}  # fmt: skip
+    out = {"variants": rows, "deflated_sharpe": dsr, "distinct_trials": int(len(sharpes))}
+    _results(cfg, "robustness.json").write_text(json.dumps(out, indent=2, default=str) + "\n")
+    show = table[["signal", "variant", "periods", "mean_ic", "ic_t", "sharpe_net", "alpha_t"]]
+    print(show.round(3).to_string(index=False))
+    for name, d in dsr.items():
+        print(f"{name}: deflated Sharpe {d['dsr']:.3f} ({d['n_trials']} trials, "
+              f"SR0 {d['expected_max_sharpe']:.3f}/month vs SR {d['sharpe_per_period']:.3f})")
+
+
+def cmd_report(cfg: dict, args: argparse.Namespace) -> None:
+    path = Path(cfg["paths"]["report"])
+    report.build_report(Path(cfg["paths"]["results"]), path)
+    print(f"report: {path} (charts in {Path(cfg['paths']['results']) / 'figures'})")
 
 
 # ---------------------------------------------------------------- memorization experiment
@@ -751,6 +854,9 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("anonymize")
     sub.add_parser("llm-score-anonymized").add_argument("--limit", type=int)
     sub.add_parser("memorization")
+    sub.add_parser("size")
+    sub.add_parser("robustness")
+    sub.add_parser("report")
     for name in ("fetch", "sections", "check"):
         p = sub.add_parser(name)
         p.add_argument("--subset", default="sample")
@@ -768,7 +874,8 @@ def main(argv: list[str] | None = None) -> None:
                 "sanity": cmd_sanity, "llm-score": cmd_llm_score,
                 "llm-signals": cmd_llm_signals, "anonymize": cmd_anonymize,
                 "llm-score-anonymized": cmd_llm_score_anonymized,
-                "memorization": cmd_memorization}  # fmt: skip
+                "memorization": cmd_memorization, "size": cmd_size,
+                "robustness": cmd_robustness, "report": cmd_report}  # fmt: skip
     commands[args.command](load_config(args.config), args)
 
 

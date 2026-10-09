@@ -1,14 +1,15 @@
 PY ?= .venv/bin/python
 RUN = $(PY) -m secsignals.cli
 
-.PHONY: all install lint test index universe filings prices returns coverage documents \
+.PHONY: all install lint test index universe filings prices size returns coverage documents \
 	sections dictionary signals llm-score llm-signals factors sanity backtest memorization \
-	extraction-check
+	extraction-check robustness report
 
-## Full pipeline, raw EDGAR/Yahoo data -> results/. Every stage caches its downloads,
-## so a rerun only fetches what is new.
-all: index universe filings prices returns coverage documents sections dictionary signals \
-	llm-score llm-signals factors sanity backtest memorization extraction-check
+## Full pipeline, raw EDGAR/Yahoo data -> results/ and REPORT.md. Every stage caches its
+## downloads and model outputs, so a rerun only fetches or scores what is new.
+all: index universe filings prices size returns coverage documents sections dictionary \
+	signals llm-score llm-signals factors sanity backtest memorization extraction-check \
+	robustness report
 
 install:
 	uv venv --python 3.13 .venv && uv pip install --python $(PY) -e ".[dev,llm]"
@@ -30,6 +31,9 @@ filings:           ## acceptance timestamps for universe 10-Ks
 
 prices:            ## Yahoo adjusted closes; reused symbols rejected
 	$(RUN) prices
+
+size:              ## public float from 10-K cover pages (SEC XBRL), for value weights
+	$(RUN) size
 
 returns:           ## 21-day forward returns from the first trading day after acceptance
 	$(RUN) returns
@@ -76,3 +80,9 @@ extraction-check:  ## MD&A extraction quality on a random sample (fails below th
 	$(RUN) fetch --subset sample
 	$(RUN) sections --subset sample
 	$(RUN) check --subset sample
+
+robustness:        ## horizon, cost, weighting and subperiod variants; deflated Sharpe ratio
+	$(RUN) robustness
+
+report:            ## REPORT.md and charts from results/
+	$(RUN) report

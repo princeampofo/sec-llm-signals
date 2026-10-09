@@ -8,6 +8,7 @@ them to market sessions without guessing.
 from __future__ import annotations
 
 import gzip
+import json
 import logging
 import re
 import threading
@@ -331,3 +332,51 @@ def client_from_config(cfg: dict) -> EdgarClient:
         backoff_seconds=e["backoff_seconds"],
         timeout_seconds=e["timeout_seconds"],
     )
+
+
+# ---------------------------------------------------------------- public float (XBRL)
+
+MIN_FLOAT, MAX_FLOAT = 1e6, 5e12
+PUBLIC_FLOAT_URL = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/dei/EntityPublicFloat.json"
+
+
+def parse_public_float(raw: bytes) -> pd.DataFrame:
+    """Public float reported on 10-K cover pages: (end, value, filed).
+
+    end is the measurement date (last business day of the second fiscal quarter); filed is
+    when the 10-K made it public, the date it can first be used. A 10-K/A repeating the
+    same measurement does not make it known any earlier, so the first filing counts.
+    """
+    facts = json.loads(raw).get("units", {}).get("USD", [])
+    rows = [(f["end"], f["val"], f["filed"]) for f in facts
+            if f.get("form", "").startswith("10-K") and f.get("val")]  # fmt: skip
+    df = pd.DataFrame(rows, columns=["end", "value", "filed"])
+    df["end"], df["filed"] = pd.to_datetime(df["end"]), pd.to_datetime(df["filed"])
+    # Some filers tag the float in the wrong unit (thousands as dollars, or the reverse);
+    # anything outside $1 million to $5 trillion cannot be an S&P 500 company's float.
+    df["value"] = df["value"].astype(float)
+    df = df[df["value"].between(MIN_FLOAT, MAX_FLOAT)]
+    df = df.sort_values("filed").drop_duplicates("end", keep="first")
+    return df.sort_values("end").reset_index(drop=True)
+
+
+def fetch_public_float(client: EdgarClient, ciks: Iterable[int]) -> pd.DataFrame:
+    """Public float history for each CIK. Companies without the XBRL concept (HTTP 404)
+    are remembered with an empty marker file so reruns do not ask again."""
+    frames = []
+    for cik in sorted(set(ciks)):
+        url = PUBLIC_FLOAT_URL.format(cik=cik)
+        marker = client.cache_path(url).with_suffix(".missing")
+        if marker.exists():
+            continue
+        try:
+            raw = client.get(url)
+        except EdgarError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+            continue
+        frames.append(parse_public_float(raw).assign(cik=cik))
+    cols = ["cik", "end", "value", "filed"]
+    return pd.concat(frames, ignore_index=True)[cols] if frames else pd.DataFrame(columns=cols)

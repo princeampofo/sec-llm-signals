@@ -26,11 +26,12 @@ from secsignals.edgar import EASTERN
 from secsignals.market import TickerLookup, universe_as_of
 
 
-def rebalance_dates(calendar: pd.DatetimeIndex, start: object, end: object) -> pd.DatetimeIndex:
-    """Last trading day of each month in [start, end]."""
+def rebalance_dates(calendar: pd.DatetimeIndex, start: object, end: object,
+                    every_months: int = 1) -> pd.DatetimeIndex:  # fmt: skip
+    """Last trading day of each month in [start, end]; every_months=3 keeps every third."""
     cal = calendar[(calendar >= pd.Timestamp(start)) & (calendar <= pd.Timestamp(end))]
     last = cal.to_series().groupby(cal.to_period("M")).max()
-    return pd.DatetimeIndex(last.to_numpy())
+    return pd.DatetimeIndex(last.to_numpy())[::every_months]
 
 
 def period_returns(prices: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
@@ -96,6 +97,37 @@ def build_panel(
     return pd.DataFrame(rows, columns=["date", "cik", "ticker", "symbol", "score", "ret"])
 
 
+def add_size(panel: pd.DataFrame, floats: pd.DataFrame, prices: pd.DataFrame,
+             max_age_days: int) -> pd.DataFrame:  # fmt: skip
+    """Add a point-in-time size (dollars) to each panel row, for value weighting.
+
+    Size = the latest public float filed on a calendar day before t (from the company's own
+    10-K cover page), grown by the stock's return from the float's measurement date to t:
+    float x P_t / P_end, with split- and dividend-adjusted prices. Floats measured more than
+    max_age_days before t are too stale and give no size.
+    floats: cik, end (measurement date), value, filed.
+    """
+    ns = "datetime64[ns]"  # one time resolution, or the as-of merges refuse to align
+    p = prices[["date", "symbol", "adj_close"]].astype({"date": ns}).sort_values("date")
+    rows = panel.reset_index(drop=True).assign(_row=lambda d: np.arange(len(d)))
+    rows["date"] = rows["date"].astype(ns)
+    f = floats.dropna(subset=["value"]).astype({"cik": int, "end": ns, "filed": ns})
+    known = pd.merge_asof(
+        rows.sort_values("date"), f.sort_values("filed"), left_on="date", right_on="filed",
+        by="cik", allow_exact_matches=False, direction="backward",
+    )  # fmt: skip
+    known = known[(known["date"] - known["end"]).dt.days <= max_age_days]
+    known = pd.merge_asof(
+        known.dropna(subset=["end"]).sort_values("end"), p.rename(columns={"date": "end",
+        "adj_close": "p_end"}), on="end", by="symbol", direction="backward",
+    )  # fmt: skip
+    known = known.merge(p.rename(columns={"adj_close": "p_t"}), on=["date", "symbol"], how="left")
+    size = (known["value"] * known["p_t"] / known["p_end"]).set_axis(known["_row"])
+    out = rows.drop(columns="_row")
+    out["size"] = size.reindex(rows["_row"]).to_numpy()
+    return out
+
+
 def information_coefficient(score: pd.Series, ret: pd.Series) -> float:
     """Spearman rank correlation of scores with next-period returns.
 
@@ -132,13 +164,13 @@ def bootstrap_ic_gap(a: pd.Series, b: pd.Series, ret: pd.Series, n_boot: int,
     return draws
 
 
-def holding_month_end(t: pd.Timestamp) -> pd.Timestamp:
-    """Calendar month-end of the month held after rebalancing on t (factor-data label).
+def holding_month_end(t: pd.Timestamp, months_held: int = 1) -> pd.Timestamp:
+    """Calendar month-end of the last month held after rebalancing on t (factor-data label).
 
     t + MonthEnd(1) would be wrong: from Friday 2012-03-30 it lands on 2012-03-31, the
     month the portfolio was formed in, not the month it was held.
     """
-    return t + pd.offsets.MonthEnd(0) + pd.offsets.MonthEnd(1)
+    return t + pd.offsets.MonthEnd(0) + pd.offsets.MonthEnd(months_held)
 
 
 def _drifted(weights: pd.Series, rets: pd.Series) -> pd.Series:
@@ -146,9 +178,18 @@ def _drifted(weights: pd.Series, rets: pd.Series) -> pd.Series:
     return grown / grown.sum() if grown.sum() != 0 else grown
 
 
-def long_short(panel: pd.DataFrame, n_quantiles: int, cost_bps: float,
-               min_stocks: int) -> pd.DataFrame:  # fmt: skip
-    """Monthly quantile long-short results, one row per holding period."""
+def long_short(panel: pd.DataFrame, n_quantiles: int, cost_bps: float, min_stocks: int,
+               weighting: str = "equal", months_held: int = 1) -> pd.DataFrame:  # fmt: skip
+    """Quantile long-short results, one row per holding period.
+
+    weighting "value" weights each leg by the panel's size column (see add_size); stocks
+    without a size are left out of the ranking, so both legs come from the same stocks.
+    """
+    if weighting not in ("equal", "value"):
+        raise ValueError(f"unknown weighting {weighting!r}")
+    if weighting == "value":
+        panel = panel.dropna(subset=["size"])
+        panel = panel[panel["size"] > 0]
     cost = cost_bps / 1e4
     prev_long = prev_short = pd.Series(dtype=float)
     prev_rets = pd.Series(dtype=float)
@@ -158,9 +199,10 @@ def long_short(panel: pd.DataFrame, n_quantiles: int, cost_bps: float,
         if len(g) < min_stocks:
             continue
         q = pd.qcut(g["score"].rank(method="first"), n_quantiles, labels=False) + 1
-        long_ = pd.Series(1.0, index=q.index[q == n_quantiles])
-        short = pd.Series(1.0, index=q.index[q == 1])
-        long_, short = long_ / len(long_), short / len(short)
+        weight = g["size"] if weighting == "value" else pd.Series(1.0, index=g.index)
+        long_ = weight[q == n_quantiles].astype(float)
+        short = weight[q == 1].astype(float)
+        long_, short = long_ / long_.sum(), short / short.sum()
         # Trades from drifted old weights to new targets, leg by leg.
         trades = []
         for new, old in ((long_, prev_long), (short, prev_short)):
@@ -171,7 +213,7 @@ def long_short(panel: pd.DataFrame, n_quantiles: int, cost_bps: float,
         gross = ret_long - ret_short
         row = {
             "rebalance_date": t,
-            "period_end": holding_month_end(t),
+            "period_end": holding_month_end(t, months_held),
             "n_stocks": len(g),
             "n_long": len(long_),
             "n_short": len(short),
@@ -198,12 +240,18 @@ def _t_stat(x: pd.Series) -> float:
     return float(x.mean() / (sd / np.sqrt(len(x))))
 
 
-def summarize(monthly: pd.DataFrame) -> dict:
-    """Headline metrics. Long-short returns are self-financing: Sharpe uses them as is."""
+def summarize(monthly: pd.DataFrame, periods_per_year: int = 12) -> dict:
+    """Headline metrics. Long-short returns are self-financing: Sharpe uses them as is.
+
+    One row per holding period; periods_per_year is 12 for monthly rebalancing, 4 for
+    three-month holds.
+    """
+    k = periods_per_year
+
     def ann(series: pd.Series) -> dict:
         mean, std = series.mean(), series.std()
-        return {"annual_return": float(mean * 12), "annual_vol": float(std * np.sqrt(12)),
-                "sharpe": float(mean / std * np.sqrt(12)) if std > 0 else float("nan")}  # fmt: skip
+        return {"annual_return": float(mean * k), "annual_vol": float(std * np.sqrt(k)),
+                "sharpe": float(mean / std * np.sqrt(k)) if std > 0 else float("nan")}  # fmt: skip
 
     ic = monthly["ic"].dropna()
     cum = (1 + monthly["ret_ls_net"]).cumprod()
@@ -220,7 +268,7 @@ def summarize(monthly: pd.DataFrame) -> dict:
         "net": ann(monthly["ret_ls_net"]),
         "avg_turnover": float(monthly["turnover"].iloc[1:].mean()),  # month 1 is the initial build
         "max_drawdown_net": float((cum / cum.cummax() - 1).min()),
-        "quantile_annual_returns": {c[4:]: float(monthly[c].mean() * 12) for c in q_cols},
+        "quantile_annual_returns": {c[4:]: float(monthly[c].mean() * k) for c in q_cols},
     }
 
 

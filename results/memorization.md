@@ -6,17 +6,17 @@ If the model used memorized knowledge of what happened next, the original text w
 
 | | Before cutoff, original | Before cutoff, anonymized | After cutoff, original | After cutoff, anonymized |
 |---|---|---|---|---|
-| Filings with a 21-day return | 470 | 470 | 940 | 940 |
-| Filing-level IC with the 21-day return (t) | -0.0194 (-0.42) | -0.0175 (-0.38) | 0.0140 (0.43) | 0.0092 (0.28) |
+| Filings with a 21-day return | 472 | 472 | 942 | 942 |
+| Filing-level IC with the 21-day return (t) | -0.0202 (-0.44) | -0.0193 (-0.42) | 0.0167 (0.51) | 0.0103 (0.32) |
 | Mean monthly IC, quintile portfolios (t) | -0.0092 (-0.49) | 0.0036 (0.23) | 0.0157 (1.84) | 0.0176 (1.75) |
 | Months | 49 | 49 | 23 | 23 |
 | Factor alpha, annualized (Newey-West t) | 0.07% (0.01) | 0.55% (0.16) | 1.02% (0.53) | 2.75% (1.15) |
 
 ## Original minus anonymized filing-level IC (95% bootstrap interval)
 
-- Before cutoff: -0.0018 [-0.0697, +0.0603]
-- After cutoff: +0.0048 [-0.0495, +0.0590]
-- Difference in differences: -0.0066 [-0.0895, +0.0753]
+- Before cutoff: -0.0009 [-0.0645, +0.0664]
+- After cutoff: +0.0064 [-0.0441, +0.0617]
+- Difference in differences: -0.0073 [-0.0949, +0.0784]
 
 ## How much anonymization changes the reading
 

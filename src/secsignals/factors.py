@@ -55,16 +55,30 @@ def load_factors(five_factor_zip: bytes, momentum_zip: bytes) -> tuple[pd.DataFr
     return ff5.join(mom, how="inner"), vintage
 
 
+def to_holding_periods(factors: pd.DataFrame, period_ends: pd.DatetimeIndex,
+                       months: int) -> pd.DataFrame:  # fmt: skip
+    """Compound monthly factor returns over each holding period ending at period_ends
+    (for multi-month holds); a period missing any month is dropped."""
+    rows = {}
+    for end in period_ends:
+        window = factors.loc[(factors.index > end - pd.offsets.MonthEnd(months))
+                             & (factors.index <= end)]  # fmt: skip
+        if len(window) == months:
+            rows[end] = (1 + window).prod() - 1
+    return pd.DataFrame(rows).T.reindex(columns=factors.columns)
+
+
 def newey_west_lags(n_obs: int) -> int:
     """Common rule of thumb: floor(4 * (T/100)^(2/9))."""
     return int(np.floor(4 * (n_obs / 100) ** (2 / 9)))
 
 
-def factor_regression(returns: pd.Series, factors: pd.DataFrame,
-                      lags: int | None = None) -> dict:  # fmt: skip
-    """OLS of monthly returns on the factors with Newey-West standard errors.
+def factor_regression(returns: pd.Series, factors: pd.DataFrame, lags: int | None = None,
+                      periods_per_year: int = 12) -> dict:  # fmt: skip
+    """OLS of period returns on the factors with Newey-West standard errors.
 
-    returns is indexed by month-end; months missing from either side are dropped.
+    returns is indexed by period end (month-end for monthly rebalancing); periods missing
+    from either side are dropped. Alpha is annualized with periods_per_year.
     """
     data = factors[FACTOR_COLUMNS].join(returns.rename("ret"), how="inner").dropna()
     lags = newey_west_lags(len(data)) if lags is None else lags
@@ -74,7 +88,7 @@ def factor_regression(returns: pd.Series, factors: pd.DataFrame,
         "months": int(len(data)),
         "newey_west_lags": lags,
         "alpha_monthly": float(fit.params["const"]),
-        "alpha_annualized": float(fit.params["const"] * 12),
+        "alpha_annualized": float(fit.params["const"] * periods_per_year),
         "alpha_t": float(fit.tvalues["const"]),
         "betas": {k: round(float(fit.params[k]), 4) for k in FACTOR_COLUMNS},
         "beta_t": {k: round(float(fit.tvalues[k]), 2) for k in FACTOR_COLUMNS},
